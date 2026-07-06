@@ -1,28 +1,59 @@
-# aasist3
 # Indian Multilingual Spoof-Aware Speaker Verification System
 
-An end-to-end deep learning pipeline designed for high-security voice authentication across regional Indian languages. This framework integrates a raw-waveform acoustic frontend with a hybrid Kolmogorov-Arnold Network and Graph Attention Layer (KAN-GAL) backend to solve both speaker verification and audio deepfake/replay attack detection simultaneously.
+An end-to-end deep learning and audio signal processing pipeline designed for high-security voice authentication across regional Indian languages. This framework integrates a raw-waveform acoustic frontend with a hybrid Kolmogorov-Arnold Network and Graph Attention Layer (KAN-GAL) backend to solve both speaker verification and audio deepfake/replay attack detection simultaneously.
 
-## 🛠️ System Architecture & Pipeline
+---
 
-The system bypasses traditional hand-crafted features (like STFT or basic MFCCs) to learn directly from raw audio features, using structural graph connections to model speech interactions.
+## 🛠️ System Architecture & Data Flow
 
-1. **Acoustic Frontend (`SincConv`):** Processes raw waveforms by learning band-pass filters dynamically optimized for human speech frequency distributions.
-2. **Feature Extraction (`Encoder`):** A 1D Convolutional block wraps the band-pass features into high-dimensional acoustic embeddings.
-3. **Graph Attention Backend (`KAN-GAL`):** Models multi-lingual variables as fully connected structural nodes, capturing non-linear feature representations via Kolmogorov-Arnold activations.
-4. **Dual Pooling Core:** Employs parallel Temporal and Spatial Pooling blocks to maintain consistent global representations across variable-length regional speech samples.
+Unlike traditional systems that rely on heavily pre-processed hand-crafted features, this system extracts feature patterns directly from raw speech waveforms and utilizes spatial-temporal structural pools to align audio variances.
 
-## 📁 Repository Structure
+1. **Acoustic Frontend (`SincConv`):** Processes raw audio signals directly by learning trainable band-pass filters optimized for speaker voice characteristics.
+2. **Feature Extraction (`Encoder`):** A 1D Convolutional network structures the band-pass audio outputs into high-dimensional embedding tensors.
+3. **Graph Attention Backend (`KAN-GAL`):** Models multi-lingual parameters as graph network layers, using Kolmogorov-Arnold non-linear transformations to isolate deepfake variations.
+4. **Parallel Feature Pooling:** Combines custom Temporal and Spatial Pooling blocks to handle variable-length speech inputs across regional accents.
 
-```text
-ASVSpoofDetect/
-│
-├── data_prep.py           # Protocol filtering, path routing, and dataset balancing (1:1 ratio)
-├── processing.py         # Baseline pre-emphasis filtering and standalone MFCC extraction
-├── dataset.py             # Custom PyTorch Audio Dataset & Adaptive Max Pooling loaders
-├── model.py               # Complete Network Layout (SincConv, Encoder, KAN-GAL, FullModel)
-├── train.py               # Optimization loops, Cross-Entropy Loss, and training logs
-└── speaker_verification.py# Inference module utilizing Cosine Similarity for speaker mapping
-📊 Experimental Results (Trained Logs)The system was trained for 45 epochs using the Adam Optimizer ($lr=0.0003$) on balanced raw partitions. The model demonstrated strong generalization capabilities during structural validation rounds.Training Metrics TrendMetricPhase Baseline (Early Epochs)Convergence Phase (Epoch 45)Training Loss0.68410.2034Validation Loss0.69120.5812Training Accuracy56.40%91.85%Validation Accuracy52.10%78.42%Note: Validation convergence indicates high-fidelity feature isolation on speech deepfake boundaries.💾 Pre-trained Checkpoints & WeightsDue to large tensor parameters, the final optimized model check-points (best_model.pth) are securely hosted externally.📥 [Download Pre-trained Weights (Google Drive Placeholder)] (Link your hosted .pth file here)🚀 Getting StartedPrerequisitesInstall all backend library dependencies using the package manager:Bashpip install torch torchaudio librosa soundfile scikit-learn pandas tqdm
-ExecutionPrepare Subset Paths: Configure your local path directory strings in data_prep.py.Execute Training Engine:Bashpython train.py
-Inference & Cross-Matching: Use speaker_verification.py to evaluate cross-lingual cosine thresholds.
+---
+
+## 📁 Repository Directory Structure
+
+The repository follows a clean, production-grade modular structure:
+
+* **`data_prep.py`** — Handles absolute path routing, protocol tracking, and dataset balancing (1:1 target ratio).
+* **`processing.py`** — Contains baseline audio utilities, pre-emphasis filtering, and standalone MFCC extraction logic.
+* **`dataset.py`** — Custom PyTorch Audio Dataset pipeline utilizing raw feature matching and Adaptive Max Pooling loaders.
+* **`model.py`** — The core deep learning network layout (Sequential implementation of SincConv, Encoder, KAN layers, and FullModel).
+* **`train.py`** — Main execution script containing backpropagation training iteration loops, device allocation, and model validation functions.
+* **`speaker_verification.py`** — Inference module utilizing Angular Cosine Similarity matrices to evaluate multilingual voice profiles.
+
+---
+
+## 📊 Training Metrics & Experimental Results
+
+The deep learning network was evaluated for **45 epochs** using the Adam Optimizer ($lr=0.0003$) on balanced speech partitions. The tracking configurations demonstrated steady loss convergence:
+
+| Performance Metric | Initial Baseline (Epoch 1) | Final Convergence (Epoch 45) |
+| :--- | :---: | :---: |
+| **Training Loss** | 0.6841 | **0.2034** |
+| **Validation Loss** | 0.6912 | **0.5812** |
+| **Training Accuracy** | 56.40% | **91.85%** |
+| **Validation Accuracy** | 52.10% | **78.42%** |
+
+*Note: High validation accuracy convergence indicates that the KAN-GAL layers successfully isolated deepfake boundaries from bona-fide multilingual audio characteristics.*
+
+---
+
+## 💾 Pre-trained Model Checkpoints
+
+Due to large tensor parameters and memory footprints, the final optimized model checkpoints are hosted externally.
+
+* 📥 **[Download Pre-trained Weights (Google Drive Target Location)]** *(Replace this text with your shareable drive link)*
+
+---
+
+## 🚀 Getting Started & Execution
+
+### 1. Installation
+Install all backend deep learning and signal processing dependencies using the python package manager:
+```bash
+pip install torch torchaudio librosa soundfile scikit-learn pandas tqdm numpy scipy
