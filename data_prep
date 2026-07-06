@@ -1,1 +1,40 @@
+import os
+import glob
+import random
 
+def get_balanced_data():
+    # Windows aur Linux dono ke hardcoded absolute paths automatically handle ho jayenge
+    if os.name == "nt":  # Agar tum Windows par run kar rahe ho
+        cv_path = r"D:\Alpha\ML\subset_data\wav_data\real"
+        spoof_path = r"D:\Alpha\ML\subset_data\wav_data\spoof"
+    else:  # Agar tum Linux/Ubuntu par run kar rahe ho
+        cv_path = "/mnt/D/Alpha/ML/subset_data/wav_data/real"
+        spoof_path = "/mnt/D/Alpha/ML/subset_data/wav_data/spoof"
+
+    # Dono folders se saari .wav files ke paths nikalna
+    cv_files = glob.glob(os.path.join(cv_path, "*.wav"))
+    spoof_files = glob.glob(os.path.join(spoof_path, "*.wav"))
+
+    print("Total REAL wav files:", len(cv_files))
+    print("Total SPOOF wav files:", len(spoof_files))
+
+    # Real aur Spoof files ko properly balance (1:1 ratio) karne ka core logic
+    n = min(len(cv_files), len(spoof_files))
+
+    random.seed(42)  # Shuffling consistence rakhne ke liye
+    random.shuffle(cv_files)
+    random.shuffle(spoof_files)
+
+    real_sample = cv_files[:n]
+    spoof_sample = spoof_files[:n]
+
+    # Dono samples ko ek sath jodhkar label lagana (0 = Real, 1 = Spoof)
+    file_list = real_sample + spoof_sample
+    labels = [0]*n + [1]*n
+
+    # Dubara shuffle karna taaki batches mein real aur spoof mix hokar aayein
+    combined = list(zip(file_list, labels))
+    random.shuffle(combined)
+
+    file_list, labels = zip(*combined)
+    return list(file_list), list(labels)
