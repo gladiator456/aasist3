@@ -43,13 +43,7 @@ The deep learning network was evaluated for **45 epochs** using the Adam Optimiz
 
 ---
 
-## 💾 Pre-trained Model Checkpoints
 
-Due to large tensor parameters and memory footprints, the final optimized model checkpoints are hosted externally.
-
-* 📥 **[Download Pre-trained Weights (Google Drive Target Location)]** *(Replace this text with your shareable drive link)*
-
----
 
 ## 🚀 Getting Started & Execution
 
