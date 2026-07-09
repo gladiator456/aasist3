@@ -58,7 +58,13 @@ def pad_random(x: np.ndarray, max_len: int = 64600):
     padded_x = np.tile(x, (num_repeats))[:max_len]
     return padded_x
 
-
+def apply_pre_emphasis(x, coef=0.97):
+    """
+    x_l = x_l - 0.97 * x_{l-1}
+    """
+    # np.append se starting zero pad kiya taaki dimensions match rahein
+    return x - coef * np.append(0, x[:-1])
+    
 class Dataset_ASVspoof2019_train(Dataset):
     def __init__(self, list_IDs, labels, base_dir):
         """self.list_IDs	: list of strings (each string: utt key),
