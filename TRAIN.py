@@ -7,7 +7,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 # Teri unique repository files se modules import kiye
-from DATAUTLIS import genSpoof_list, ASVspoofLADataset
+from DATAUTLIS import genSpoof_list, Dataset_ASVspoof2019_train
 from MODELDEFINITION import Model  # Tera complete KAN AASIST3 Model
 
 print("="*60)
@@ -27,7 +27,7 @@ WEIGHT_DECAY = 1e-4
 CLASS_WEIGHTS = [0.1, 0.9]
 
 # Dataset location setup (Auto-picks Kaggle dataset path)
-DATASET_ROOT = "/kaggle/input/datasets/mahimyadav2006/ladataset/LA"
+DATASET_ROOT = "/kaggle/input/datasets/gladiator456/ladataset/LA"
 if not os.path.exists(DATASET_ROOT):
     # Fallback local path agar tu local machine par test kare
     DATASET_ROOT = "./LA"
@@ -43,8 +43,8 @@ print("\n[1/4] Parsing dataset protocols...")
 train_meta, train_files = genSpoof_list(TRAIN_PROTOCOL, is_train=True)
 dev_meta, dev_files = genSpoof_list(DEV_PROTOCOL, is_train=False)
 
-train_dataset = ASVspoofLADataset(train_files, train_meta, TRAIN_AUDIO_DIR, training=True)
-dev_dataset = ASVspoofLADataset(dev_files, dev_meta, DEV_AUDIO_DIR, training=False)
+train_dataset = Dataset_ASVspoof2019_train(train_files, train_meta, TRAIN_AUDIO_DIR, training=True)
+dev_dataset = Dataset_ASVspoof2019_train(dev_files, dev_meta, DEV_AUDIO_DIR, training=False)
 
 train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
 dev_loader = DataLoader(dev_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
