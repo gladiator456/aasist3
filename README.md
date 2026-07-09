@@ -69,7 +69,7 @@ Step 2: Clone & Deploy Dependencies
 Create the first code cell in your notebook and run it to pull the latest production architecture:
 
 !rm -rf aasist3_project
-!git clone https://github.com/gladiator466/aasist3.git aasist3_project
+!git clone https://github.com/gladiator456/aasist3.git aasist3_project
 %cd aasist3_project
 !pip install -q efficient-kan soundfile tqdm
 
