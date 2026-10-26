@@ -27,7 +27,9 @@ BASE_LR = float(os.environ.get("BASE_LR", "1e-4"))
 NUM_WORKERS = int(os.environ.get("NUM_WORKERS", "2"))
 CHECKPOINT_DIR = os.environ.get("CHECKPOINT_DIR", "./checkpoints")
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-print(f"Device={DEVICE} | AMP={USE_AMP} | batch={BATCH_SIZE} | epochs={NUM_EPOCHS}")\nif DEVICE.type == "cuda" and not USE_AMP:\n    print("AMP is disabled by default for maximum KAN numerical compatibility; set USE_AMP=1 after a successful baseline run.")
+print(f"Device={DEVICE} | AMP={USE_AMP} | batch={BATCH_SIZE} | epochs={NUM_EPOCHS}")
+if DEVICE.type == "cuda" and not USE_AMP:
+    print("AMP is disabled by default for maximum KAN numerical compatibility; set USE_AMP=1 after a successful baseline run.")
 
 def find_dataset_root():
     candidates = glob.glob("/kaggle/input/**/ASVspoof2019_LA_train", recursive=True)
