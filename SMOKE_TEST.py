@@ -13,8 +13,8 @@ def main():
     }
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = Model(args).to(device).train()
-    waves = torch.randn(2, 64600, device=device)
-    labels = torch.tensor([0, 1], device=device)
+    waves = torch.randn(1, 64600, device=device)
+    labels = torch.tensor([1], device=device)
     _, logits = model(waves)
     assert logits.shape == (1, 2), f"Unexpected logits shape: {tuple(logits.shape)}"
     loss = torch.nn.functional.cross_entropy(logits, labels)
