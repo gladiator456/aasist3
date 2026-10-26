@@ -25,6 +25,10 @@ BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "8"))
 NUM_EPOCHS = int(os.environ.get("NUM_EPOCHS", "25"))
 BASE_LR = float(os.environ.get("BASE_LR", "1e-4"))
 NUM_WORKERS = int(os.environ.get("NUM_WORKERS", "2"))
+# Quick-test knobs: 0 means "use everything". A seeded random subset keeps both classes.
+MAX_TRAIN_SAMPLES = int(os.environ.get("MAX_TRAIN_SAMPLES", "0"))
+MAX_DEV_SAMPLES = int(os.environ.get("MAX_DEV_SAMPLES", "0"))
+LOG_EVERY = int(os.environ.get("LOG_EVERY", "200"))
 CHECKPOINT_DIR = os.environ.get("CHECKPOINT_DIR", "./checkpoints")
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 print(f"Device={DEVICE} | AMP={USE_AMP} | batch={BATCH_SIZE} | epochs={NUM_EPOCHS}")
@@ -67,6 +71,17 @@ train_meta, train_ids = genSpoof_list(train_protocol, is_train=True)
 dev_meta, dev_ids = genSpoof_list(dev_protocol, is_train=False)
 if not train_ids or not dev_ids:
     raise RuntimeError("Train or dev protocol contains no examples.")
+if MAX_TRAIN_SAMPLES > 0:
+    random.Random(SEED).shuffle(train_ids)
+    train_ids = train_ids[:MAX_TRAIN_SAMPLES]
+if MAX_DEV_SAMPLES > 0:
+    random.Random(SEED).shuffle(dev_ids)
+    dev_ids = dev_ids[:MAX_DEV_SAMPLES]
+for name, ids, meta in (("train", train_ids, train_meta), ("dev", dev_ids, dev_meta)):
+    n_bona = sum(meta[i] for i in ids)
+    print(f"{name}: {len(ids)} clips | bonafide={n_bona} spoof={len(ids) - n_bona}")
+    if n_bona == 0 or n_bona == len(ids):
+        raise RuntimeError(f"The {name} subset has only one class; EER is undefined. Use a larger subset.")
 train_ds = Dataset_ASVspoof2019_train(train_ids, train_meta, train_audio, is_train=True)
 dev_ds = Dataset_ASVspoof2019_train(dev_ids, dev_meta, dev_audio, is_train=False)
 loader_args = dict(num_workers=NUM_WORKERS, pin_memory=USE_AMP, persistent_workers=NUM_WORKERS > 0)
@@ -149,6 +164,8 @@ for epoch in range(1, NUM_EPOCHS + 1):
         scaler.update()
         scheduler.step()
         epoch_loss += loss.item() * waves.size(0)
+        if LOG_EVERY > 0 and step % LOG_EVERY == 0:
+            print(f"  epoch {epoch} step {step}/{len(train_loader)} | loss={loss.item():.4f} | {time.time() - started:.0f}s elapsed", flush=True)
 
     dev_loss, dev_acc, dev_eer = evaluate()
     elapsed = int(time.time() - started)

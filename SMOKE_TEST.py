@@ -23,6 +23,18 @@ def main():
     grad_count = sum(p.grad is not None for p in model.parameters() if p.requires_grad)
     assert grad_count > 0, "No gradients were produced"
     assert all(torch.isfinite(p.grad).all() for p in model.parameters() if p.grad is not None), "Non-finite gradients found"
+    # Multi-sample batch in eval mode (what validation does), and a check that
+    # repeated inference is deterministic.
+    model.eval()
+    with torch.no_grad():
+        batch = torch.randn(4, 64600, device=device)
+        _, out1 = model(batch)
+        _, out2 = model(batch)
+    assert out1.shape == (4, 2), f"Unexpected eval logits shape: {tuple(out1.shape)}"
+    assert torch.isfinite(out1).all(), "Non-finite eval logits"
+    assert torch.allclose(out1, out2), "Eval mode is not deterministic"
+    if device.type == "cuda":
+        print(f"Peak GPU memory: {torch.cuda.max_memory_allocated() / 1e9:.2f} GB")
     print(f"Smoke test passed on {device}. logits={tuple(logits.shape)}, loss={loss.item():.4f}, parameters_with_grad={grad_count}")
 
 if __name__ == "__main__":

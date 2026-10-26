@@ -1,6 +1,8 @@
 name: Model smoke test
 
 on:
+  pull_request:
+    branches: [main]
   push:
     branches: [main, "fix/training-ready"]
   workflow_dispatch:
