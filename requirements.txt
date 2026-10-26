@@ -3,4 +3,4 @@ torchaudio
 soundfile
 numpy
 scikit-learn
-git+https://github.com/Blealtan/efficient-kan.git
+efficient-kan @ git+https://github.com/Blealtan/efficient-kan.git
