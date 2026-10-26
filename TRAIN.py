@@ -20,14 +20,14 @@ if torch.cuda.is_available():
     torch.cuda.manual_seed_all(SEED)
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-USE_AMP = DEVICE.type == "cuda"
+USE_AMP = DEVICE.type == "cuda" and os.environ.get("USE_AMP", "0") == "1"
 BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "8"))
 NUM_EPOCHS = int(os.environ.get("NUM_EPOCHS", "25"))
 BASE_LR = float(os.environ.get("BASE_LR", "1e-4"))
 NUM_WORKERS = int(os.environ.get("NUM_WORKERS", "2"))
 CHECKPOINT_DIR = os.environ.get("CHECKPOINT_DIR", "./checkpoints")
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
-print(f"Device={DEVICE} | AMP={USE_AMP} | batch={BATCH_SIZE} | epochs={NUM_EPOCHS}")
+print(f"Device={DEVICE} | AMP={USE_AMP} | batch={BATCH_SIZE} | epochs={NUM_EPOCHS}")\nif DEVICE.type == "cuda" and not USE_AMP:\n    print("AMP is disabled by default for maximum KAN numerical compatibility; set USE_AMP=1 after a successful baseline run.")
 
 def find_dataset_root():
     candidates = glob.glob("/kaggle/input/**/ASVspoof2019_LA_train", recursive=True)
