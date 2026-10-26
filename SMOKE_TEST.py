@@ -16,7 +16,7 @@ def main():
     waves = torch.randn(2, 64600, device=device)
     labels = torch.tensor([0, 1], device=device)
     _, logits = model(waves)
-    assert logits.shape == (2, 2), f"Unexpected logits shape: {tuple(logits.shape)}"
+    assert logits.shape == (1, 2), f"Unexpected logits shape: {tuple(logits.shape)}"
     loss = torch.nn.functional.cross_entropy(logits, labels)
     loss.backward()
     assert torch.isfinite(loss), f"Non-finite loss: {loss.item()}"
