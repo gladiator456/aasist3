@@ -33,12 +33,17 @@ if DEVICE.type == "cuda" and not USE_AMP:
 
 def find_dataset_root():
     candidates = glob.glob("/kaggle/input/**/ASVspoof2019_LA_train", recursive=True)
+    # The official ZIP may contain an extra parent directory, so search only
+    # likely local data roots rather than recursively scanning the whole repo.
+    for base in ("./LA", "./data/LA", "./data"):
+        if os.path.isdir(base):
+            candidates.extend(glob.glob(os.path.join(base, "**", "ASVspoof2019_LA_train"), recursive=True))
+    if os.path.isdir("./ASVspoof2019_LA_train"):
+        candidates.append("./ASVspoof2019_LA_train")
     for candidate in candidates:
         root = os.path.dirname(candidate)
-        if os.path.isdir(os.path.join(root, "ASVspoof2019_LA_dev")) and os.path.isdir(os.path.join(root, "ASVspoof2019_LA_cm_protocols")):
-            return root
-    for root in ("./LA", ".", "./data/LA"):
-        if os.path.isdir(os.path.join(root, "ASVspoof2019_LA_train")):
+        if (os.path.isdir(os.path.join(root, "ASVspoof2019_LA_dev"))
+                and os.path.isdir(os.path.join(root, "ASVspoof2019_LA_cm_protocols"))):
             return root
     return None
 
@@ -77,7 +82,7 @@ d_args = {
     "temperatures": [2.0, 2.0, 1.0, 1.0],
 }
 model = Model(d_args).to(DEVICE)
-criterion = nn.CrossEntropyLoss()
+criterion = nn.CrossEntropyLoss(weight=torch.tensor([0.1, 0.9], dtype=torch.float32, device=DEVICE))
 optimizer = torch.optim.AdamW(model.parameters(), lr=BASE_LR, weight_decay=1e-4)
 scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, NUM_EPOCHS * len(train_loader)), eta_min=5e-6)
 scaler = torch.amp.GradScaler("cuda", enabled=USE_AMP)
