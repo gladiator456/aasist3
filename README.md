@@ -53,11 +53,11 @@ The implementation is in [`MODELDEFINITION.py`](MODELDEFINITION.py). The dense p
 | --- | --- |
 | Data | ASVspoof 2019 LA, train split for training and dev split for validation |
 | Input | 64,600 samples per clip: random crop for training, deterministic crop or tiling for dev |
-| Loss | Cross-entropy; label 0 = spoof, label 1 = bonafide |
-| Optimizer | Adam, learning rate 1e-4, weight decay 1e-4 |
+| Loss | Weighted cross-entropy with weights `[0.1, 0.9]` for `[spoof, bonafide]` |
+| Optimizer | AdamW, learning rate 1e-4, weight decay 1e-4 |
 | Schedule | Cosine annealing from 1e-4 down to 5e-6, stepped per batch |
-| Batch size / epochs | 32 / 25 |
-| Stability | Mixed precision (AMP) on CUDA, gradient clipping at 5.0 |
+| Batch size / epochs | 8 / 25 by default; configurable through environment variables |
+| Stability | AMP disabled by default; opt in with `USE_AMP=1` after baseline validation; gradient clipping at 5.0 |
 | Selection metric | Dev equal error rate (EER), alongside loss and accuracy |
 | Checkpoints | `last.pt` every epoch, `best.pt` when dev EER improves; includes optimizer/scheduler/scaler state |
 
@@ -95,7 +95,7 @@ d_args = {
     "filts": [70, [1, 32], [32, 32], [32, 24], [24, 24]],
     "gat_dims": [24, 32],
     "pool_ratios": [0.4, 0.5, 0.7, 0.5],
-    "temperatures": [2.0, 2.0, 100.0, 100.0],
+    "temperatures": [2.0, 2.0, 1.0, 1.0],
 }
 model = Model(d_args)
 checkpoint = torch.load("checkpoints/best.pt", map_location="cpu")
@@ -110,7 +110,7 @@ print("bonafide" if logits.argmax(1).item() == 1 else "spoof")   # class 1 = bon
 
 ## Status and roadmap
 
-The model, data pipeline and training loop are implemented, and validation currently reports **dev-set accuracy**. Still to do:
+The model, data pipeline and training loop are implemented; validation reports dev loss, accuracy and EER. A passing smoke test checks execution only, not model quality. Still to do:
 
 - Evaluate with the standard anti-spoofing metrics, **EER** and **min t-DCF**, on the dev and eval sets.
 - Publish the trained weights and the final numbers from a full 25-epoch run.
