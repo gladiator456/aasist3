@@ -43,7 +43,9 @@ A standard layer computes `W·x` and then applies a fixed activation. A KAN laye
 - **KAN-GraphPool:** keeps the top-k nodes, where the node scores come from a KAN.
 - **Where KANs are used:** inside the graph-attention layers, the pooling scorers and the output classifier. The two input projections into the graph (`temporal_proj`, `spatial_proj`) are still ordinary `nn.Linear` layers.
 
-The implementation is in [`MODELDEFINITION.py`](MODELDEFINITION.py).
+The implementation is in [`MODELDEFINITION.py`](MODELDEFINITION.py). The dense pairwise graph is bounded to 64 spatial nodes to avoid multi-tens-of-gigabytes attention tensors. The temporal graph uses 70 channel nodes. Node features are aligned before residual aggregation because graph pooling changes node counts.
+
+**Important:** this is an experimental KAN-based architecture. A successful smoke test verifies code execution, not model quality or reproduction of published AASIST results. Run training on a GPU and report EER on held-out evaluation data before drawing performance conclusions.
 
 ## Training setup
 
@@ -51,12 +53,13 @@ The implementation is in [`MODELDEFINITION.py`](MODELDEFINITION.py).
 | --- | --- |
 | Data | ASVspoof 2019 LA, train split for training and dev split for validation |
 | Input | 64,600 samples per clip: random crop for training, deterministic crop or tiling for dev |
-| Loss | Cross-entropy with class weights `[0.1, 0.9]` for `[spoof, bonafide]` to offset the spoof-heavy label distribution |
-| Optimizer | Adam, learning rate 1e-4, weight decay 1e-4 |
+| Loss | Weighted cross-entropy with weights `[0.1, 0.9]` for `[spoof, bonafide]` |
+| Optimizer | AdamW, learning rate 1e-4, weight decay 1e-4 |
 | Schedule | Cosine annealing from 1e-4 down to 5e-6, stepped per batch |
-| Batch size / epochs | 32 / 25 |
-| Stability | Mixed precision (AMP) on CUDA, gradient clipping at 5.0 |
-| Checkpoints | `last.pt` every epoch, `best.pt` when dev accuracy improves |
+| Batch size / epochs | 8 / 25 by default; configurable through environment variables |
+| Stability | AMP disabled by default; opt in with `USE_AMP=1` after baseline validation; gradient clipping at 5.0 |
+| Selection metric | Dev equal error rate (EER), alongside loss and accuracy |
+| Checkpoints | `last.pt` every epoch, `best.pt` when dev EER improves; includes optimizer/scheduler/scaler state |
 
 ## Repository layout
 
@@ -66,19 +69,20 @@ The implementation is in [`MODELDEFINITION.py`](MODELDEFINITION.py).
 | [`MODELDEFINITION.py`](MODELDEFINITION.py) | The complete model: SincConv front-end, KAN graph layers, classifier |
 | [`DATAUTLIS.py`](DATAUTLIS.py) | Protocol-file parsing, padding and cropping, `Dataset` classes |
 | [`DATASET_Download.py`](DATASET_Download.py) | Downloads the ASVspoof 2019 LA archive from the University of Edinburgh DataShare |
-| `KAN_GRAPH_MODULES.py`, `SINCCONVENCODER.py`, `MODELS.py` | Earlier modular drafts of the same components. `TRAIN.py` does not use them, and `MODELS.py` still imports from a `core/` package that is not in this repo |
+| `KAN_GRAPH_MODULES.py`, `SINCCONVENCODER.py` | Earlier modular drafts; the active training path uses `MODELDEFINITION.py`. `MODELS.py` is now a compatibility wrapper around the canonical model |
 
 ## Getting started
 
 ```bash
 git clone https://github.com/gladiator456/aasist3.git
 cd aasist3
-pip install -r requirements.txt efficient-kan
+pip install -r requirements.txt
+python SMOKE_TEST.py              # check forward/backward before training
 python DATASET_Download.py        # fetches and unzips the LA dataset into ./LA
 python TRAIN.py
 ```
 
-On Kaggle, add the ASVspoof 2019 LA dataset as an input instead of downloading it; `TRAIN.py` searches `/kaggle/input` for it. Turn on a GPU for reasonable training times. `TRAIN.py` writes checkpoints to `/kaggle/working/checkpoints`, so when running elsewhere change `CHECKPOINT_DIR` near the top of the file.
+On Kaggle, add the ASVspoof 2019 LA dataset as an input instead of downloading it; `TRAIN.py` searches `/kaggle/input` for it. Turn on a GPU for reasonable training times. `TRAIN.py` writes checkpoints to `./checkpoints` by default; set `CHECKPOINT_DIR` to change this location. Start with `NUM_EPOCHS=1` and a small `BATCH_SIZE` before a full run.
 
 ### Minimal inference
 
@@ -91,10 +95,11 @@ d_args = {
     "filts": [70, [1, 32], [32, 32], [32, 24], [24, 24]],
     "gat_dims": [24, 32],
     "pool_ratios": [0.4, 0.5, 0.7, 0.5],
-    "temperatures": [2.0, 2.0, 100.0, 100.0],
+    "temperatures": [2.0, 2.0, 1.0, 1.0],
 }
 model = Model(d_args)
-model.load_state_dict(torch.load("checkpoints/best.pt", map_location="cpu"))
+checkpoint = torch.load("checkpoints/best.pt", map_location="cpu")
+model.load_state_dict(checkpoint["model_state_dict"])
 model.eval()
 
 wav = torch.randn(1, 64600)              # replace with a real 16 kHz clip, cropped or tiled to 64,600 samples
@@ -105,7 +110,7 @@ print("bonafide" if logits.argmax(1).item() == 1 else "spoof")   # class 1 = bon
 
 ## Status and roadmap
 
-The model, data pipeline and training loop are implemented, and validation currently reports **dev-set accuracy**. Still to do:
+The model, data pipeline and training loop are implemented; validation reports dev loss, accuracy and EER. A passing smoke test checks execution only, not model quality. Still to do:
 
 - Evaluate with the standard anti-spoofing metrics, **EER** and **min t-DCF**, on the dev and eval sets.
 - Publish the trained weights and the final numbers from a full 25-epoch run.

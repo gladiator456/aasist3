@@ -1,156 +1,163 @@
+"""Train the KAN-based ASVspoof model on ASVspoof2019 LA."""
 import os
 import glob
 import time
+import random
+import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
+from sklearn.metrics import roc_curve
 
 from DATAUTLIS import genSpoof_list, Dataset_ASVspoof2019_train
 from MODELDEFINITION import Model
 
-print("=" * 60)
-print("       AASIST3 KAN-UPGRADE TRAINING ENGINE STARTING")
-print("=" * 60)
+SEED = int(os.environ.get("SEED", "42"))
+random.seed(SEED)
+np.random.seed(SEED)
+torch.manual_seed(SEED)
+if torch.cuda.is_available():
+    torch.cuda.manual_seed_all(SEED)
 
-# 1. HARDWARE & DEVICE CHECK
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using Device: {device}")
-USE_AMP = device.type == "cuda"
-
-# 2. HYPERPARAMETERS
-BATCH_SIZE = 32
-NUM_EPOCHS = 25
-BASE_LR = 1e-4
-MIN_LR = 5e-6
-WEIGHT_DECAY = 1e-4
-CLASS_WEIGHTS = [0.1, 0.9]  # index 0 = spoof, index 1 = bonafide (see genSpoof_list)
-CHECKPOINT_DIR = "/kaggle/working/checkpoints"
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+USE_AMP = DEVICE.type == "cuda" and os.environ.get("USE_AMP", "0") == "1"
+BATCH_SIZE = int(os.environ.get("BATCH_SIZE", "8"))
+NUM_EPOCHS = int(os.environ.get("NUM_EPOCHS", "25"))
+BASE_LR = float(os.environ.get("BASE_LR", "1e-4"))
+NUM_WORKERS = int(os.environ.get("NUM_WORKERS", "2"))
+CHECKPOINT_DIR = os.environ.get("CHECKPOINT_DIR", "./checkpoints")
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
+print(f"Device={DEVICE} | AMP={USE_AMP} | batch={BATCH_SIZE} | epochs={NUM_EPOCHS}")
+if DEVICE.type == "cuda" and not USE_AMP:
+    print("AMP is disabled by default for maximum KAN numerical compatibility; set USE_AMP=1 after a successful baseline run.")
 
-# 3. DATASET PATH AUTO-DETECT
-# Kaggle mounts datasets at /kaggle/input/<dataset-slug>/... — the exact slug
-# depends on what you named it when you added it, so we search for it instead
-# of hardcoding a path that will only work for one specific username/slug.
 def find_dataset_root():
     candidates = glob.glob("/kaggle/input/**/ASVspoof2019_LA_train", recursive=True)
-    if candidates:
-        return os.path.dirname(candidates[0])
-    if os.path.exists("./LA/ASVspoof2019_LA_train"):
-        return "./LA"
+    # The official ZIP may contain an extra parent directory, so search only
+    # likely local data roots rather than recursively scanning the whole repo.
+    for base in ("./LA", "./data/LA", "./data"):
+        if os.path.isdir(base):
+            candidates.extend(glob.glob(os.path.join(base, "**", "ASVspoof2019_LA_train"), recursive=True))
+    if os.path.isdir("./ASVspoof2019_LA_train"):
+        candidates.append("./ASVspoof2019_LA_train")
+    for candidate in candidates:
+        root = os.path.dirname(candidate)
+        if (os.path.isdir(os.path.join(root, "ASVspoof2019_LA_dev"))
+                and os.path.isdir(os.path.join(root, "ASVspoof2019_LA_cm_protocols"))):
+            return root
     return None
 
-DATASET_ROOT = find_dataset_root()
-if DATASET_ROOT is None:
-    print("\nCould not auto-locate the LA dataset under /kaggle/input.")
-    print("Available inputs:", os.listdir("/kaggle/input") if os.path.exists("/kaggle/input") else "none")
+root = os.environ.get("DATASET_ROOT") or find_dataset_root()
+if not root:
     raise FileNotFoundError(
-        "Set DATASET_ROOT manually to the folder that contains "
-        "ASVspoof2019_LA_train / ASVspoof2019_LA_dev / ASVspoof2019_LA_cm_protocols"
+        "ASVspoof LA dataset not found. Set DATASET_ROOT to the folder containing "
+        "ASVspoof2019_LA_train, ASVspoof2019_LA_dev and ASVspoof2019_LA_cm_protocols."
     )
-print(f"Using dataset root: {DATASET_ROOT}")
 
-TRAIN_AUDIO_DIR = os.path.join(DATASET_ROOT, "ASVspoof2019_LA_train", "flac")
-DEV_AUDIO_DIR = os.path.join(DATASET_ROOT, "ASVspoof2019_LA_dev", "flac")
+train_audio = os.path.join(root, "ASVspoof2019_LA_train", "flac")
+dev_audio = os.path.join(root, "ASVspoof2019_LA_dev", "flac")
+protocol_dir = os.path.join(root, "ASVspoof2019_LA_cm_protocols")
+train_protocol = os.path.join(protocol_dir, "ASVspoof2019.LA.cm.train.trn.txt")
+dev_protocol = os.path.join(protocol_dir, "ASVspoof2019.LA.cm.dev.trl.txt")
+for required in (train_audio, dev_audio, train_protocol, dev_protocol):
+    if not os.path.exists(required):
+        raise FileNotFoundError(f"Required dataset path is missing: {required}")
 
-TRAIN_PROTOCOL = os.path.join(DATASET_ROOT, "ASVspoof2019_LA_cm_protocols", "ASVspoof2019.LA.cm.train.trn.txt")
-DEV_PROTOCOL = os.path.join(DATASET_ROOT, "ASVspoof2019_LA_cm_protocols", "ASVspoof2019.LA.cm.dev.trl.txt")
+train_meta, train_ids = genSpoof_list(train_protocol, is_train=True)
+dev_meta, dev_ids = genSpoof_list(dev_protocol, is_train=False)
+if not train_ids or not dev_ids:
+    raise RuntimeError("Train or dev protocol contains no examples.")
+train_ds = Dataset_ASVspoof2019_train(train_ids, train_meta, train_audio, is_train=True)
+dev_ds = Dataset_ASVspoof2019_train(dev_ids, dev_meta, dev_audio, is_train=False)
+loader_args = dict(num_workers=NUM_WORKERS, pin_memory=USE_AMP, persistent_workers=NUM_WORKERS > 0)
+train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, drop_last=False, **loader_args)
+dev_loader = DataLoader(dev_ds, batch_size=BATCH_SIZE, shuffle=False, **loader_args)
+print(f"Dataset root: {root}\nTrain examples: {len(train_ds)} | Dev examples: {len(dev_ds)}")
 
-# 4. DATA LOADERS
-print("\n[1/4] Parsing dataset protocols...")
-train_meta, train_files = genSpoof_list(TRAIN_PROTOCOL, is_train=True)
-dev_meta, dev_files = genSpoof_list(DEV_PROTOCOL, is_train=False)
-
-train_dataset = Dataset_ASVspoof2019_train(train_files, train_meta, TRAIN_AUDIO_DIR, is_train=True)
-dev_dataset = Dataset_ASVspoof2019_train(dev_files, dev_meta, DEV_AUDIO_DIR, is_train=False)
-
-train_loader = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True, num_workers=4, pin_memory=True)
-dev_loader = DataLoader(dev_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=4, pin_memory=True)
-
-print(f"Data Loaded! Train Steps/Epoch: {len(train_loader)} | Dev Steps: {len(dev_loader)}")
-
-# 5. MODEL CONFIG
 d_args = {
     "first_conv": 128,
     "filts": [70, [1, 32], [32, 32], [32, 24], [24, 24]],
     "gat_dims": [24, 32],
     "pool_ratios": [0.4, 0.5, 0.7, 0.5],
-    "temperatures": [2.0, 2.0, 100.0, 100.0],
+    "temperatures": [2.0, 2.0, 1.0, 1.0],
 }
+model = Model(d_args).to(DEVICE)
+criterion = nn.CrossEntropyLoss(weight=torch.tensor([0.1, 0.9], dtype=torch.float32, device=DEVICE))
+optimizer = torch.optim.AdamW(model.parameters(), lr=BASE_LR, weight_decay=1e-4)
+scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, NUM_EPOCHS * len(train_loader)), eta_min=5e-6)
+scaler = torch.amp.GradScaler("cuda", enabled=USE_AMP)
 
-print("\n[2/4] Initializing AASIST3 model with KAN modules...")
-model = Model(d_args).to(device)
+def autocast_context():
+    return torch.amp.autocast(device_type=DEVICE.type, enabled=USE_AMP)
 
-# 6. OPTIMIZER, CRITERION, SCHEDULER
-criterion = nn.CrossEntropyLoss(weight=torch.tensor(CLASS_WEIGHTS, dtype=torch.float32).to(device))
-optimizer = torch.optim.Adam(model.parameters(), lr=BASE_LR, weight_decay=WEIGHT_DECAY)
-
-total_steps = NUM_EPOCHS * len(train_loader)
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=total_steps, eta_min=MIN_LR)
-scaler = torch.amp.GradScaler(enabled=USE_AMP)
-
-
-def run_validation():
+def evaluate():
     model.eval()
-    total_loss, correct, total = 0.0, 0, 0
+    total_loss, total, correct = 0.0, 0, 0
+    labels_all, scores_all = [], []
     with torch.no_grad():
-        for batch_x, batch_y in dev_loader:
-            batch_x = batch_x.to(device, non_blocking=True)
-            batch_y = batch_y.to(device, non_blocking=True)
-            with torch.amp.autocast(device_type=device.type, enabled=USE_AMP):
-                _, batch_out = model(batch_x, Freq_aug=False)
-                loss = criterion(batch_out, batch_y)
-            total_loss += loss.item() * batch_x.size(0)
-            preds = torch.argmax(batch_out, dim=1)
-            correct += (preds == batch_y).sum().item()
-            total += batch_y.size(0)
-    return total_loss / total, correct / total
+        for waves, labels in dev_loader:
+            waves = waves.to(DEVICE, non_blocking=True)
+            labels = labels.to(DEVICE, non_blocking=True)
+            with autocast_context():
+                _, logits = model(waves)
+                loss = criterion(logits, labels)
+            total_loss += loss.item() * waves.size(0)
+            pred = logits.argmax(dim=1)
+            correct += (pred == labels).sum().item()
+            total += labels.numel()
+            labels_all.extend(labels.cpu().tolist())
+            # Higher score means more likely bonafide (label 1).
+            scores_all.extend((logits[:, 1] - logits[:, 0]).float().cpu().tolist())
+    fpr, tpr, _ = roc_curve(labels_all, scores_all, pos_label=1)
+    fnr = 1.0 - tpr
+    idx = int(np.nanargmin(np.abs(fnr - fpr)))
+    eer = float((fnr[idx] + fpr[idx]) / 2.0)
+    return total_loss / max(total, 1), correct / max(total, 1), eer
 
+def save_checkpoint(path, epoch, best_eer, dev_loss, dev_acc):
+    torch.save({
+        "epoch": epoch,
+        "model_state_dict": model.state_dict(),
+        "optimizer_state_dict": optimizer.state_dict(),
+        "scheduler_state_dict": scheduler.state_dict(),
+        "scaler_state_dict": scaler.state_dict(),
+        "best_dev_eer": best_eer,
+        "dev_loss": dev_loss,
+        "dev_accuracy": dev_acc,
+        "d_args": d_args,
+        "seed": SEED,
+    }, path)
 
-# 7. TRAINING LOOP
-print("\n[3/4] Starting Training Execution Loop...")
-best_dev_acc = 0.0
-
-for epoch in range(NUM_EPOCHS):
+best_eer = float("inf")
+for epoch in range(1, NUM_EPOCHS + 1):
     model.train()
-    running_loss = 0.0
-    epoch_start = time.time()
-
-    for batch_idx, (batch_x, batch_y) in enumerate(train_loader):
-        batch_x = batch_x.to(device, non_blocking=True)
-        batch_y = batch_y.to(device, non_blocking=True)
-
+    epoch_loss = 0.0
+    started = time.time()
+    for step, (waves, labels) in enumerate(train_loader, start=1):
+        waves = waves.to(DEVICE, non_blocking=True)
+        labels = labels.to(DEVICE, non_blocking=True)
         optimizer.zero_grad(set_to_none=True)
-
-        with torch.amp.autocast(device_type=device.type, enabled=USE_AMP):
-            _, batch_out = model(batch_x, Freq_aug=True)
-            loss = criterion(batch_out, batch_y)
-
+        with autocast_context():
+            _, logits = model(waves)
+            loss = criterion(logits, labels)
+        if not torch.isfinite(loss):
+            raise FloatingPointError(f"Non-finite training loss at epoch {epoch}, step {step}: {loss.item()}")
         scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), 5.0)
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
         scaler.step(optimizer)
         scaler.update()
         scheduler.step()
+        epoch_loss += loss.item() * waves.size(0)
 
-        running_loss += loss.item() * batch_x.size(0)
+    dev_loss, dev_acc, dev_eer = evaluate()
+    elapsed = int(time.time() - started)
+    avg_train_loss = epoch_loss / len(train_ds)
+    save_checkpoint(os.path.join(CHECKPOINT_DIR, "last.pt"), epoch, best_eer, dev_loss, dev_acc)
+    print(f"Epoch {epoch:02d}/{NUM_EPOCHS} | train_loss={avg_train_loss:.5f} | dev_loss={dev_loss:.5f} | dev_acc={dev_acc:.4f} | dev_EER={dev_eer:.4f} | {elapsed}s")
+    if dev_eer < best_eer:
+        best_eer = dev_eer
+        save_checkpoint(os.path.join(CHECKPOINT_DIR, "best.pt"), epoch, best_eer, dev_loss, dev_acc)
+        print(f"  Saved new best checkpoint (dev EER={best_eer:.4f})")
 
-    epoch_time = time.time() - epoch_start
-    avg_loss = running_loss / len(train_dataset)
-
-    dev_loss, dev_acc = run_validation()
-
-    print(
-        f"Epoch [{epoch+1:03d}/{NUM_EPOCHS:03d}] | "
-        f"Train Loss: {avg_loss:.5f} | Dev Loss: {dev_loss:.5f} | Dev Acc: {dev_acc:.4f} | "
-        f"Time: {int(epoch_time)}s | LR: {optimizer.param_groups[0]['lr']:.2e}"
-    )
-
-    # checkpoint every epoch (small models; adjust if disk space is tight)
-    torch.save(model.state_dict(), os.path.join(CHECKPOINT_DIR, "last.pt"))
-    if dev_acc > best_dev_acc:
-        best_dev_acc = dev_acc
-        torch.save(model.state_dict(), os.path.join(CHECKPOINT_DIR, "best.pt"))
-        print(f"  -> New best dev accuracy ({dev_acc:.4f}), saved best.pt")
-
-print(f"\n[4/4] Training Complete! Best dev accuracy: {best_dev_acc:.4f}")
-print(f"Checkpoints saved in: {CHECKPOINT_DIR}")
+print(f"Training complete. Best dev EER={best_eer:.4f}. Checkpoints: {CHECKPOINT_DIR}")

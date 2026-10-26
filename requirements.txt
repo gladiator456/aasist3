@@ -1,5 +1,5 @@
 torch
-torchaudio
 soundfile
 numpy
-imageio-ffmpeg
+scikit-learn
+efficient-kan @ git+https://github.com/Blealtan/efficient-kan.git
