@@ -164,7 +164,12 @@ class Model(nn.Module):
         self.max_pool = nn.MaxPool1d(kernel_size=3, stride=3, padding=1)
         self.batch_norm = nn.BatchNorm1d(out_channels)
         self.selu = nn.SELU(inplace=True)
-        self.temporal_proj = nn.Linear(out_channels, feature_dim)
+        # Preserve the intended two axes: 70 channel-nodes for the temporal
+        # graph, and a bounded set of time-nodes for the spatial graph.
+        with torch.no_grad():
+            dummy = torch.zeros(1, 64600)
+            reduced_time = self.max_pool(self.conv_time(dummy)).shape[-1]
+        self.temporal_proj = nn.Linear(reduced_time, feature_dim)
         self.spatial_proj = nn.Linear(out_channels, feature_dim)
         self.S1 = nn.Parameter(torch.randn(1, 1, feature_dim) * 0.02)
 
@@ -185,7 +190,7 @@ class Model(nn.Module):
     def forward(self, x, Freq_aug=False):
         # Freq_aug retained for compatibility; no frequency augmentation is applied.
         x_hat = self.selu(self.batch_norm(self.max_pool(self.conv_time(x))))
-        t_base = self.temporal_proj(x_hat.transpose(1, 2))  # [B,70,D]
+        t_base = self.temporal_proj(x_hat)  # [B,70,D]
         # Bound the quadratic spatial graph before any pairwise attention.
         spatial_features = F.adaptive_avg_pool1d(x_hat, self.MAX_SPATIAL_NODES)
         s_base = self.spatial_proj(spatial_features.transpose(1, 2))  # [B,64,D]
