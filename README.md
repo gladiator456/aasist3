@@ -1,128 +1,299 @@
-# AASIST3: KAN-Enhanced Audio Deepfake Detection
+# AASIST3 — Experimental KAN-Based Audio Anti-Spoofing
 
-![PyTorch](https://img.shields.io/badge/PyTorch-EE4C2C?logo=pytorch&logoColor=white)
 ![Python](https://img.shields.io/badge/Python-3776AB?logo=python&logoColor=white)
+![PyTorch](https://img.shields.io/badge/PyTorch-EE4C2C?logo=pytorch&logoColor=white)
 ![Task](https://img.shields.io/badge/Task-Speech%20Anti--Spoofing-orange)
 ![Dataset](https://img.shields.io/badge/Dataset-ASVspoof%202019%20LA-blue)
 
-A PyTorch model that classifies speech as **bonafide** (real human voice) or **spoof** (synthetic or converted voice). It starts from the AASIST graph-attention architecture for anti-spoofing and replaces its dense `Linear` layers with **Kolmogorov-Arnold Network (KAN)** layers, which learn their activation functions as splines instead of using fixed ones.
+**AASIST3** is an experimental PyTorch project exploring Kolmogorov–Arnold Network (KAN) components in a graph-based audio anti-spoofing model inspired by AASIST.
 
-The model works directly on the raw waveform, so no spectrogram or hand-crafted feature extraction is needed. It is trained on the [ASVspoof 2019](https://www.asvspoof.org/) Logical Access (LA) data, and the training script is set up to run on Kaggle GPUs.
+The model is designed to classify an audio recording as either **bonafide** (genuine speech) or **spoof** (spoofed speech). It operates on raw audio waveforms and is intended to be trained and evaluated using the **ASVspoof 2019 Logical Access (LA)** dataset.
 
-## Why KANs here
+> **Status:** The model implementation and basic synthetic-input smoke tests are in place. Real-dataset training and evaluation are still pending. No model-performance results are reported in this README; this section will be updated after training.
 
-A standard layer computes `W·x` and then applies a fixed activation. A KAN layer instead puts a learnable univariate function (a B-spline) on every edge. The hypothesis behind this project is that these learnable non-linearities can capture the subtle artifacts that synthetic speech leaves behind, with an architecture that stays compact. Layers come from [`efficient-kan`](https://github.com/Blealtan/efficient-kan).
+---
+
+## Contents
+
+- [Project Overview](#project-overview)
+- [Why KANs?](#why-kans)
+- [Architecture](#architecture)
+- [Dataset](#dataset)
+- [Repository Structure](#repository-structure)
+- [Setup](#setup)
+- [Run a Smoke Test](#run-a-smoke-test)
+- [Training](#training)
+- [Configuration](#configuration)
+- [Evaluation and Results](#evaluation-and-results)
+- [Current Status and Roadmap](#current-status-and-roadmap)
+- [Acknowledgements](#acknowledgements)
+
+## Project Overview
+
+Speech anti-spoofing aims to distinguish genuine speech from audio created or manipulated to imitate a real speaker. It is an important component of reliable automatic speaker verification systems.
+
+This project explores a graph-based architecture with KAN-related components to learn patterns that may help distinguish bonafide and spoofed speech. It draws inspiration from **AASIST (Audio Anti-Spoofing using Integrated Spectro-Temporal Graph Attention Networks)** while experimenting with KAN-based graph-attention, graph-pooling and classification components.
+
+The implementation is a research prototype, not a claim of an exact reproduction of the original AASIST model or its published results.
+
+### Project goals
+
+- Build an experimental KAN-based architecture for speech anti-spoofing.
+- Explore spatial and temporal graph-based processing of audio representations.
+- Establish a reproducible training and development-evaluation workflow.
+- Evaluate the trained model on the intended dataset and document the findings.
+- Identify possible architectural improvements through future experiments and ablations.
+
+## Why KANs?
+
+Conventional neural-network layers commonly combine learned linear transformations with fixed activation functions. Kolmogorov–Arnold Networks (KANs) instead represent learnable univariate functions on connections; implementations such as `efficient-kan` use spline-based functions.
+
+In this project, KAN components are explored within graph-attention layers, graph-pooling scorers and the output classifier. The motivation is to investigate whether these learnable nonlinear transformations are useful for audio anti-spoofing. Their effectiveness remains a research question and must be established through experiments.
+
+Implementation dependency: [`efficient-kan`](https://github.com/Blealtan/efficient-kan).
 
 ## Architecture
 
+The current model processes a fixed-length raw waveform and combines temporal and spatial graph representations.
+
+```text
+Raw waveform
+(16 kHz, 64,600 samples; approximately 4.04 seconds)
+        |
+        v
+Parametric SincConv front end
+70 learnable band-pass filters, mel-initialised
+        |
+        v
+MaxPool1d -> BatchNorm1d -> SELU
+        |
+        +-----------------------------+
+        |                             |
+        v                             v
+Temporal projection              Spatial projection
+24-dimensional nodes             24-dimensional nodes
+        |                             |
+        v                             v
+KAN graph attention              KAN graph attention
+        |                             |
+        v                             v
+KAN graph pooling                KAN graph pooling
+(keep 40%)                       (keep 50%)
+        |                             |
+        +-------------+---------------+
+                      |
+                      v
+             Learnable master node
+                      |
+                      v
+       Four parallel heterogeneous graph branches
+       KAN-HS-GAL -> KAN-GraphPool -> KAN-HS-GAL
+                      |
+                      v
+          Residual aggregation across branches
+                      |
+                      v
+             Dropout and statistics pooling
+                      |
+                      v
+                KAN classifier
+                      |
+                      v
+              Two output logits
+                [spoof, bonafide]
 ```
- raw waveform (16 kHz, 64,600 samples ≈ 4.04 s)
-        │
-        ▼  Parametric SincConv, 70 learnable band-pass filters (mel-initialised)
-        ▼  MaxPool1d → BatchNorm1d → SELU
-        │
-        ├──────────────── temporal axis ────────┬──────── spatial axis ────────┐
-        ▼  Linear → 24-dim nodes                ▼  Linear → 24-dim nodes       │
-        ▼  KAN graph attention (KAN-GAL)        ▼  KAN-GAL                     │
-        ▼  KAN-GraphPool (keep 40%)             ▼  KAN-GraphPool (keep 50%)    │
-        └──────────────────────┬────────────────────────────────────────────────┘
-                               │   + one learnable "stack" master node
-                               ▼
-        4 parallel branches, each:  KAN-HS-GAL → KAN-GraphPool → KAN-HS-GAL
-                               │
-                               ▼  residual element-wise sum across branches
-                               ▼  Dropout 0.2
-        statistics pooling: max |·| and mean over nodes (temporal, spatial) + max |·| of master node
-                               ▼  Dropout 0.5 → concat (5 × 24 = 120)
-                               ▼
-        KAN classifier → 2 logits [spoof, bonafide]
+
+### Main components
+
+- **SincConv front end:** learns band-pass filters from the raw waveform.
+- **KAN-GAL:** graph-attention processing using KAN-based projections.
+- **KAN-HS-GAL:** heterogeneous graph-attention processing across temporal and spatial nodes with a shared master node.
+- **KAN-GraphPool:** selects nodes using learned scoring functions.
+- **Classifier:** produces two logits corresponding to spoof and bonafide classes.
+
+The active implementation is in [`MODELDEFINITION.py`](MODELDEFINITION.py). The input projections named `temporal_proj` and `spatial_proj` use standard `nn.Linear` layers; KAN components are used in other parts of the graph-processing and classification pipeline. The spatial graph is capped at 64 nodes to constrain pairwise-attention memory use.
+
+These architectural details describe the implementation, not verified evidence of model effectiveness.
+
+## Dataset
+
+The training pipeline is intended for the **ASVspoof 2019 Logical Access (LA)** dataset. The dataset is not included in this repository; obtain it from the [official ASVspoof resources](https://www.asvspoof.org/) or an authorised source and follow the applicable access and usage terms.
+
+### Expected directory layout
+
+The data utilities and training script expect the training audio, development audio and protocol files to be available in a structure equivalent to:
+
+```text
+LA/
+├── ASVspoof2019_LA_train/
+│   └── flac/
+├── ASVspoof2019_LA_dev/
+│   └── flac/
+└── ASVspoof2019_LA_cm_protocols/
+    ├── ASVspoof2019.LA.cm.train.trn.txt
+    └── ASVspoof2019.LA.cm.dev.trl.txt
 ```
 
-- **KAN-GAL:** graph attention layer whose projections are KANs. It is applied to the temporal and spatial node sets separately.
-- **KAN-HS-GAL:** heterogeneous stacked graph attention. It processes temporal and spatial nodes together with a shared master node.
-- **KAN-GraphPool:** keeps the top-k nodes, where the node scores come from a KAN.
-- **Where KANs are used:** inside the graph-attention layers, the pooling scorers and the output classifier. The two input projections into the graph (`temporal_proj`, `spatial_proj`) are still ordinary `nn.Linear` layers.
+The exact root directory can vary, but the expected subdirectory and protocol filenames must be preserved. The data pipeline expects audio sampled at **16 kHz** and prepares clips of 64,600 samples for model input. Check the implementation in [`DATAUTLIS.py`](DATAUTLIS.py) if your dataset layout differs.
 
-The implementation is in [`MODELDEFINITION.py`](MODELDEFINITION.py). The dense pairwise graph is bounded to 64 spatial nodes to avoid multi-tens-of-gigabytes attention tensors. The temporal graph uses 70 channel nodes. Node features are aligned before residual aggregation because graph pooling changes node counts.
+### Download or provide the dataset
 
-**Important:** this is an experimental KAN-based architecture. A successful smoke test verifies code execution, not model quality or reproduction of published AASIST results. Run training on a GPU and report EER on held-out evaluation data before drawing performance conclusions.
+The repository includes a download helper:
 
-## Training setup
+```bash
+python DATASET_Download.py
+```
 
-| Setting | Value |
-| --- | --- |
-| Data | ASVspoof 2019 LA, train split for training and dev split for validation |
-| Input | 64,600 samples per clip: random crop for training, deterministic crop or tiling for dev |
-| Loss | Weighted cross-entropy with weights `[0.1, 0.9]` for `[spoof, bonafide]` |
-| Optimizer | AdamW, learning rate 1e-4, weight decay 1e-4 |
-| Schedule | Cosine annealing from 1e-4 down to 5e-6, stepped per batch |
-| Batch size / epochs | 8 / 25 by default; configurable through environment variables |
-| Stability | AMP disabled by default; opt in with `USE_AMP=1` after baseline validation; gradient clipping at 5.0 |
-| Selection metric | Dev equal error rate (EER), alongside loss and accuracy |
-| Checkpoints | `last.pt` every epoch, `best.pt` when dev EER improves; includes optimizer/scheduler/scaler state |
+The script is intended to download and unpack the LA dataset under `./LA`. If you are using Kaggle, you can instead attach the dataset as notebook input; the training script searches common Kaggle and local locations. If automatic discovery does not find your dataset, set `DATASET_ROOT` to the correct root directory.
 
-## Repository layout
+## Repository Structure
 
-| File | Role |
-| --- | --- |
-| [`TRAIN.py`](TRAIN.py) | Training and validation loop; finds the dataset automatically on Kaggle |
-| [`MODELDEFINITION.py`](MODELDEFINITION.py) | The complete model: SincConv front-end, KAN graph layers, classifier |
-| [`DATAUTLIS.py`](DATAUTLIS.py) | Protocol-file parsing, padding and cropping, `Dataset` classes |
-| [`DATASET_Download.py`](DATASET_Download.py) | Downloads the ASVspoof 2019 LA archive from the University of Edinburgh DataShare |
-| `KAN_GRAPH_MODULES.py`, `SINCCONVENCODER.py` | Earlier modular drafts; the active training path uses `MODELDEFINITION.py`. `MODELS.py` is now a compatibility wrapper around the canonical model |
+| File | Purpose |
+|---|---|
+| [`TRAIN.py`](TRAIN.py) | Training loop, development evaluation, progress logging and checkpoint saving. |
+| [`MODELDEFINITION.py`](MODELDEFINITION.py) | Active model definition, including the SincConv front end, graph components and classifier. |
+| [`DATAUTLIS.py`](DATAUTLIS.py) | Protocol parsing, audio preprocessing and dataset utilities. |
+| [`DATASET_Download.py`](DATASET_Download.py) | Dataset download and extraction helper. |
+| [`SMOKE_TEST.py`](SMOKE_TEST.py) | Basic forward/backward and output-validity checks using synthetic inputs. |
+| [`requirements.txt`](requirements.txt) | Python package dependencies. |
+| [`.github/workflows/model-smoke-test.yml`](.github/workflows/model-smoke-test.yml) | GitHub Actions workflow for automated smoke testing. |
+| `KAN_GRAPH_MODULES.py`, `SINCCONVENCODER.py` | Additional modular files; the active training path is centred on `MODELDEFINITION.py`. |
+| `MODELS.py` | Compatibility wrapper around the canonical model definition. |
 
-## Getting started
+## Setup
+
+Python 3 and the packages listed in `requirements.txt` are required. A CUDA-compatible GPU is recommended for training; actual memory and runtime requirements need to be confirmed on the target hardware.
+
+### 1. Clone the repository
 
 ```bash
 git clone https://github.com/gladiator456/aasist3.git
 cd aasist3
+```
+
+### 2. Create and activate a virtual environment (recommended)
+
+**Windows PowerShell**
+
+```powershell
+python -m venv .venv
+.venv\Scripts\Activate.ps1
+```
+
+**Linux / Kaggle**
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+```
+
+On a managed Kaggle notebook, you may use the notebook's existing Python environment instead.
+
+### 3. Install dependencies
+
+```bash
+python -m pip install --upgrade pip
 pip install -r requirements.txt
-python SMOKE_TEST.py              # check forward/backward before training
-python DATASET_Download.py        # fetches and unzips the LA dataset into ./LA
+```
+
+For GPU training, ensure that the installed PyTorch build is compatible with the CUDA environment available on the machine.
+
+## Run a Smoke Test
+
+Before attempting a full training run, execute:
+
+```bash
+python SMOKE_TEST.py
+```
+
+The smoke test checks basic model execution, backward propagation, output shape and numerical validity using synthetic inputs.
+
+**Important:** passing this test only confirms that the tested model path executes. It does not verify dataset loading, full real-data training, GPU memory requirements, convergence or detection quality. Those checks require a run with the actual dataset and target hardware.
+
+## Training
+
+1. Make sure the dataset and protocol files are available.
+2. Check that the dataset root is detected correctly.
+3. Run a short trial before starting a long training job.
+4. Inspect training logs, development evaluation output, memory use and saved checkpoints.
+5. If the trial is stable, proceed to a longer run.
+
+### Basic command
+
+```bash
 python TRAIN.py
 ```
 
-On Kaggle, add the ASVspoof 2019 LA dataset as an input instead of downloading it; `TRAIN.py` searches `/kaggle/input` for it. Turn on a GPU for reasonable training times. `TRAIN.py` writes checkpoints to `./checkpoints` by default; set `CHECKPOINT_DIR` to change this location. Start with `NUM_EPOCHS=1` and a small `BATCH_SIZE` before a full run.
+By default, the training script is configured for **25 epochs** and a **batch size of 8**. These settings may need to be reduced depending on the available GPU memory and observed runtime. Checkpoints are written to `./checkpoints` by default; `CHECKPOINT_DIR` can be used to change the output location.
 
-### Minimal inference
+### Short trial run
 
-```python
-import torch
-from MODELDEFINITION import Model
+For a small initial check on Linux or Kaggle:
 
-d_args = {
-    "first_conv": 128,
-    "filts": [70, [1, 32], [32, 32], [32, 24], [24, 24]],
-    "gat_dims": [24, 32],
-    "pool_ratios": [0.4, 0.5, 0.7, 0.5],
-    "temperatures": [2.0, 2.0, 1.0, 1.0],
-}
-model = Model(d_args)
-checkpoint = torch.load("checkpoints/best.pt", map_location="cpu")
-model.load_state_dict(checkpoint["model_state_dict"])
-model.eval()
-
-wav = torch.randn(1, 64600)              # replace with a real 16 kHz clip, cropped or tiled to 64,600 samples
-with torch.no_grad():
-    _, logits = model(wav)
-print("bonafide" if logits.argmax(1).item() == 1 else "spoof")   # class 1 = bonafide
+```bash
+MAX_TRAIN_SAMPLES=2000 MAX_DEV_SAMPLES=1000 NUM_EPOCHS=2 BATCH_SIZE=2 LOG_EVERY=50 python TRAIN.py
 ```
 
-## Status and roadmap
+On Windows PowerShell, set the environment variables before launching Python:
 
-The model, data pipeline and training loop are implemented; validation reports dev loss, accuracy and EER. A passing smoke test checks execution only, not model quality. Still to do:
+```powershell
+$env:MAX_TRAIN_SAMPLES = "2000"
+$env:MAX_DEV_SAMPLES = "1000"
+$env:NUM_EPOCHS = "2"
+$env:BATCH_SIZE = "2"
+$env:LOG_EVERY = "50"
+python TRAIN.py
+```
 
-- Evaluate with the standard anti-spoofing metrics, **EER** and **min t-DCF**, on the dev and eval sets.
-- Publish the trained weights and the final numbers from a full 25-epoch run.
-- Run an ablation against the dense-layer baseline to measure what the KAN layers actually contribute.
-- Add a small command-line script for scoring audio files.
+The subset limits are intended for quick debugging, not for reporting final research results. The first real-data run may still reveal dataset-path, dependency, audio-decoding or memory issues.
 
-## Acknowledgments
+## Configuration
 
-- AASIST: Jung et al., *AASIST: Audio Anti-Spoofing using Integrated Spectro-Temporal Graph Attention Networks* (NAVER, MIT licence). Parts of the data utilities derive from their code.
-- KAN: Liu et al., *KAN: Kolmogorov-Arnold Networks*, and the [`efficient-kan`](https://github.com/Blealtan/efficient-kan) implementation.
-- ASVspoof 2019 challenge organisers, for the dataset.
+The training script supports environment-based configuration. Relevant options include:
+
+| Variable | Purpose |
+|---|---|
+| `DATASET_ROOT` | Explicit dataset root directory. |
+| `NUM_EPOCHS` | Number of training epochs. |
+| `BATCH_SIZE` | Number of examples per batch. |
+| `MAX_TRAIN_SAMPLES` | Optional limit on training examples for a quick trial. |
+| `MAX_DEV_SAMPLES` | Optional limit on development examples for a quick trial. |
+| `LOG_EVERY` | Training progress logging interval. |
+| `CHECKPOINT_DIR` | Directory used to save checkpoints. |
+| `USE_AMP` | Opt-in setting for automatic mixed precision where supported. |
+
+Consult [`TRAIN.py`](TRAIN.py) for current defaults and implementation details. Start with a stable baseline before enabling optional mixed precision or changing multiple training settings at once.
+
+## Evaluation and Results
+
+The training code includes development-set evaluation. Once real-data training is complete, this section should document the evaluation protocol, checkpoint-selection procedure, dataset split and relevant anti-spoofing metrics.
+
+**Results are intentionally omitted for now.** No EER, accuracy, min t-DCF or other model-performance values are claimed until training and evaluation have been completed. Results should be added with the corresponding experimental setup so they can be interpreted and reproduced.
+
+## Current Status and Roadmap
+
+- [x] Experimental model implementation.
+- [x] Audio preprocessing and dataset utilities.
+- [x] Training and development-evaluation code.
+- [x] Synthetic-input forward/backward smoke test.
+- [x] Automated smoke-test workflow.
+- [ ] Verify the full data pipeline using the real ASVspoof 2019 LA dataset.
+- [ ] Complete a real-data trial run and confirm checkpoint saving.
+- [ ] Complete the planned training run.
+- [ ] Record evaluation settings and measured results.
+- [ ] Compare against an appropriate baseline and perform ablation studies.
+- [ ] Consider a small command-line interface for scoring audio files.
+
+## Acknowledgements
+
+- **AASIST:** Jung et al., *AASIST: Audio Anti-Spoofing using Integrated Spectro-Temporal Graph Attention Networks*. Parts of the data utilities are derived from the AASIST codebase; consult the source files and their notices for attribution and licence details.
+- **KAN:** Liu et al., *KAN: Kolmogorov-Arnold Networks*.
+- **efficient-kan:** [Blealtan/efficient-kan](https://github.com/Blealtan/efficient-kan).
+- **ASVspoof 2019 organisers:** for the dataset and challenge resources.
+
+Please review the licences and attribution requirements for all reused code, dependencies and dataset resources before redistribution.
 
 ## Author
 
-Anuj Saxena, B.Tech Chemical Engineering, IIT Jammu.
+**Anuj Saxena**  
+B.Tech, Chemical Engineering — IIT Jammu
