@@ -69,7 +69,7 @@ The implementation is in [`MODELDEFINITION.py`](MODELDEFINITION.py). The dense p
 | [`MODELDEFINITION.py`](MODELDEFINITION.py) | The complete model: SincConv front-end, KAN graph layers, classifier |
 | [`DATAUTLIS.py`](DATAUTLIS.py) | Protocol-file parsing, padding and cropping, `Dataset` classes |
 | [`DATASET_Download.py`](DATASET_Download.py) | Downloads the ASVspoof 2019 LA archive from the University of Edinburgh DataShare |
-| `KAN_GRAPH_MODULES.py`, `SINCCONVENCODER.py`, `MODELS.py` | Earlier modular drafts of the same components. `TRAIN.py` does not use them, and `MODELS.py` still imports from a `core/` package that is not in this repo |
+| `KAN_GRAPH_MODULES.py`, `SINCCONVENCODER.py` | Earlier modular drafts; the active training path uses `MODELDEFINITION.py`. `MODELS.py` is now a compatibility wrapper around the canonical model |
 
 ## Getting started
 
@@ -82,7 +82,7 @@ python DATASET_Download.py        # fetches and unzips the LA dataset into ./LA
 python TRAIN.py
 ```
 
-On Kaggle, add the ASVspoof 2019 LA dataset as an input instead of downloading it; `TRAIN.py` searches `/kaggle/input` for it. Turn on a GPU for reasonable training times. `TRAIN.py` writes checkpoints to `/kaggle/working/checkpoints`, so when running elsewhere change `CHECKPOINT_DIR` near the top of the file.
+On Kaggle, add the ASVspoof 2019 LA dataset as an input instead of downloading it; `TRAIN.py` searches `/kaggle/input` for it. Turn on a GPU for reasonable training times. `TRAIN.py` writes checkpoints to `./checkpoints` by default; set `CHECKPOINT_DIR` to change this location. Start with `NUM_EPOCHS=1` and a small `BATCH_SIZE` before a full run.
 
 ### Minimal inference
 
