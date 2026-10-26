@@ -43,7 +43,9 @@ A standard layer computes `W·x` and then applies a fixed activation. A KAN laye
 - **KAN-GraphPool:** keeps the top-k nodes, where the node scores come from a KAN.
 - **Where KANs are used:** inside the graph-attention layers, the pooling scorers and the output classifier. The two input projections into the graph (`temporal_proj`, `spatial_proj`) are still ordinary `nn.Linear` layers.
 
-The implementation is in [`MODELDEFINITION.py`](MODELDEFINITION.py).
+The implementation is in [`MODELDEFINITION.py`](MODELDEFINITION.py). The dense pairwise graph is bounded to 64 spatial nodes to avoid multi-tens-of-gigabytes attention tensors. The temporal graph uses 70 channel nodes. Node features are aligned before residual aggregation because graph pooling changes node counts.
+
+**Important:** this is an experimental KAN-based architecture. A successful smoke test verifies code execution, not model quality or reproduction of published AASIST results. Run training on a GPU and report EER on held-out evaluation data before drawing performance conclusions.
 
 ## Training setup
 
@@ -51,12 +53,13 @@ The implementation is in [`MODELDEFINITION.py`](MODELDEFINITION.py).
 | --- | --- |
 | Data | ASVspoof 2019 LA, train split for training and dev split for validation |
 | Input | 64,600 samples per clip: random crop for training, deterministic crop or tiling for dev |
-| Loss | Cross-entropy with class weights `[0.1, 0.9]` for `[spoof, bonafide]` to offset the spoof-heavy label distribution |
+| Loss | Cross-entropy; label 0 = spoof, label 1 = bonafide |
 | Optimizer | Adam, learning rate 1e-4, weight decay 1e-4 |
 | Schedule | Cosine annealing from 1e-4 down to 5e-6, stepped per batch |
 | Batch size / epochs | 32 / 25 |
 | Stability | Mixed precision (AMP) on CUDA, gradient clipping at 5.0 |
-| Checkpoints | `last.pt` every epoch, `best.pt` when dev accuracy improves |
+| Selection metric | Dev equal error rate (EER), alongside loss and accuracy |
+| Checkpoints | `last.pt` every epoch, `best.pt` when dev EER improves; includes optimizer/scheduler/scaler state |
 
 ## Repository layout
 
@@ -73,7 +76,8 @@ The implementation is in [`MODELDEFINITION.py`](MODELDEFINITION.py).
 ```bash
 git clone https://github.com/gladiator456/aasist3.git
 cd aasist3
-pip install -r requirements.txt efficient-kan
+pip install -r requirements.txt
+python SMOKE_TEST.py              # check forward/backward before training
 python DATASET_Download.py        # fetches and unzips the LA dataset into ./LA
 python TRAIN.py
 ```
@@ -94,7 +98,8 @@ d_args = {
     "temperatures": [2.0, 2.0, 100.0, 100.0],
 }
 model = Model(d_args)
-model.load_state_dict(torch.load("checkpoints/best.pt", map_location="cpu"))
+checkpoint = torch.load("checkpoints/best.pt", map_location="cpu")
+model.load_state_dict(checkpoint["model_state_dict"])
 model.eval()
 
 wav = torch.randn(1, 64600)              # replace with a real 16 kHz clip, cropped or tiled to 64,600 samples
