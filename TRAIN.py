@@ -7,7 +7,7 @@ import numpy as np
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from sklearn.metrics import roc_curve
+from sklearn.metrics import roc_curve, roc_auc_score, confusion_matrix, classification_report
 
 from DATAUTLIS import genSpoof_list, Dataset_ASVspoof2019_train
 from MODELDEFINITION import Model
@@ -30,6 +30,9 @@ MAX_TRAIN_SAMPLES = int(os.environ.get("MAX_TRAIN_SAMPLES", "0"))
 MAX_DEV_SAMPLES = int(os.environ.get("MAX_DEV_SAMPLES", "0"))
 LOG_EVERY = int(os.environ.get("LOG_EVERY", "200"))
 CHECKPOINT_DIR = os.environ.get("CHECKPOINT_DIR", "./checkpoints")
+# INIT_FROM loads model weights only; RESUME_FROM restores full training state.
+INIT_FROM = os.environ.get("INIT_FROM", "").strip()
+RESUME_FROM = os.environ.get("RESUME_FROM", "").strip()
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 print(f"Device={DEVICE} | AMP={USE_AMP} | batch={BATCH_SIZE} | epochs={NUM_EPOCHS}")
 if DEVICE.type == "cuda" and not USE_AMP:
@@ -108,7 +111,7 @@ def autocast_context():
 def evaluate():
     model.eval()
     total_loss, total, correct = 0.0, 0, 0
-    labels_all, scores_all = [], []
+    labels_all, scores_all, preds_all = [], [], []
     with torch.no_grad():
         for waves, labels in dev_loader:
             waves = waves.to(DEVICE, non_blocking=True)
@@ -121,13 +124,21 @@ def evaluate():
             correct += (pred == labels).sum().item()
             total += labels.numel()
             labels_all.extend(labels.cpu().tolist())
+            preds_all.extend(pred.cpu().tolist())
             # Higher score means more likely bonafide (label 1).
             scores_all.extend((logits[:, 1] - logits[:, 0]).float().cpu().tolist())
+
     fpr, tpr, _ = roc_curve(labels_all, scores_all, pos_label=1)
     fnr = 1.0 - tpr
     idx = int(np.nanargmin(np.abs(fnr - fpr)))
     eer = float((fnr[idx] + fpr[idx]) / 2.0)
-    return total_loss / max(total, 1), correct / max(total, 1), eer
+    auc = float(roc_auc_score(labels_all, scores_all))
+    cm = confusion_matrix(labels_all, preds_all, labels=[0, 1])
+    report = classification_report(
+        labels_all, preds_all, labels=[0, 1],
+        target_names=["spoof", "bonafide"], output_dict=True, zero_division=0
+    )
+    return total_loss / max(total, 1), correct / max(total, 1), eer, auc, cm, report
 
 def save_checkpoint(path, epoch, best_eer, dev_loss, dev_acc):
     torch.save({
@@ -143,8 +154,35 @@ def save_checkpoint(path, epoch, best_eer, dev_loss, dev_acc):
         "seed": SEED,
     }, path)
 
+start_epoch = 1
 best_eer = float("inf")
-for epoch in range(1, NUM_EPOCHS + 1):
+
+if INIT_FROM and RESUME_FROM:
+    raise ValueError("Set only one of INIT_FROM or RESUME_FROM, not both.")
+
+if INIT_FROM:
+    init_ckpt = torch.load(INIT_FROM, map_location=DEVICE, weights_only=False)
+    model.load_state_dict(init_ckpt["model_state_dict"])
+    print(f"Initialized model weights from {INIT_FROM}; optimizer and scheduler are fresh.")
+
+if RESUME_FROM:
+    resume_ckpt = torch.load(RESUME_FROM, map_location=DEVICE, weights_only=False)
+    model.load_state_dict(resume_ckpt["model_state_dict"])
+    optimizer.load_state_dict(resume_ckpt["optimizer_state_dict"])
+    scheduler.load_state_dict(resume_ckpt["scheduler_state_dict"])
+    if resume_ckpt.get("scaler_state_dict"):
+        scaler.load_state_dict(resume_ckpt["scaler_state_dict"])
+    start_epoch = int(resume_ckpt["epoch"]) + 1
+    best_eer = float(resume_ckpt.get("best_dev_eer", float("inf")))
+    if start_epoch > NUM_EPOCHS:
+        raise ValueError(
+            f"Checkpoint is already at epoch {start_epoch - 1}, but NUM_EPOCHS={NUM_EPOCHS}. "
+            "Set NUM_EPOCHS to the intended total epoch count."
+        )
+    print(f"Resuming from epoch {start_epoch} using {RESUME_FROM}. "
+          "Keep NUM_EPOCHS and dataset/subset settings consistent with the original run.")
+
+for epoch in range(start_epoch, NUM_EPOCHS + 1):
     model.train()
     epoch_loss = 0.0
     started = time.time()
@@ -159,21 +197,33 @@ for epoch in range(1, NUM_EPOCHS + 1):
             raise FloatingPointError(f"Non-finite training loss at epoch {epoch}, step {step}: {loss.item()}")
         scaler.scale(loss).backward()
         scaler.unscale_(optimizer)
-        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+        grad_norm = torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+        if not torch.isfinite(grad_norm):
+            raise FloatingPointError(f"Non-finite gradient norm at epoch {epoch}, step {step}: {grad_norm.item()}")
         scaler.step(optimizer)
         scaler.update()
         scheduler.step()
         epoch_loss += loss.item() * waves.size(0)
         if LOG_EVERY > 0 and step % LOG_EVERY == 0:
-            print(f"  epoch {epoch} step {step}/{len(train_loader)} | loss={loss.item():.4f} | {time.time() - started:.0f}s elapsed", flush=True)
+            print(f"  epoch {epoch} step {step}/{len(train_loader)} | loss={loss.item():.4f} | "
+                  f"grad_norm={grad_norm.item():.4f} | {time.time() - started:.0f}s elapsed", flush=True)
 
-    dev_loss, dev_acc, dev_eer = evaluate()
+    dev_loss, dev_acc, dev_eer, dev_auc, dev_cm, dev_report = evaluate()
     elapsed = int(time.time() - started)
     avg_train_loss = epoch_loss / len(train_ds)
-    save_checkpoint(os.path.join(CHECKPOINT_DIR, "last.pt"), epoch, best_eer, dev_loss, dev_acc)
-    print(f"Epoch {epoch:02d}/{NUM_EPOCHS} | train_loss={avg_train_loss:.5f} | dev_loss={dev_loss:.5f} | dev_acc={dev_acc:.4f} | dev_EER={dev_eer:.4f} | {elapsed}s")
-    if dev_eer < best_eer:
+    improved = dev_eer < best_eer
+    if improved:
         best_eer = dev_eer
+
+    save_checkpoint(os.path.join(CHECKPOINT_DIR, "last.pt"), epoch, best_eer, dev_loss, dev_acc)
+    print(f"Epoch {epoch:02d}/{NUM_EPOCHS} | train_loss={avg_train_loss:.5f} | "
+          f"dev_loss={dev_loss:.5f} | dev_acc={dev_acc:.4f} | "
+          f"dev_EER={dev_eer:.4f} | dev_AUC={dev_auc:.4f} | {elapsed}s")
+    print(f"  Dev confusion matrix [actual spoof, bonafide] x [pred spoof, bonafide]:\n{dev_cm}")
+    print(f"  Class recall: spoof={dev_report['spoof']['recall']:.4f}, "
+          f"bonafide={dev_report['bonafide']['recall']:.4f}")
+
+    if improved:
         save_checkpoint(os.path.join(CHECKPOINT_DIR, "best.pt"), epoch, best_eer, dev_loss, dev_acc)
         print(f"  Saved new best checkpoint (dev EER={best_eer:.4f})")
 
