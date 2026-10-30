@@ -185,11 +185,16 @@ class Model(nn.Module):
         self.kan_hs_gal2 = nn.ModuleList([KAN_HtrgGraphAttentionLayer(feature_dim, feature_dim, temps[3] if len(temps) > 3 else 1.0) for _ in range(4)])
         self.drop_branch = nn.Dropout(0.2)
         self.drop_readout = nn.Dropout(0.5)
-        self.out_layer = KAN([5 * feature_dim, 2])
+        # The pooled readout is normalised so it sits inside the KAN spline grid;
+        # without this, ~1/3 of classifier inputs fell outside [-1, 1] and the
+        # initial logits were huge (std ~5, loss ~4-20 instead of ~0.7).
+        self.readout_norm = nn.LayerNorm(5 * feature_dim)
+        self.out_layer = KAN([5 * feature_dim, 2], grid_range=[-3, 3])
 
     def forward(self, x, Freq_aug=False):
         # Freq_aug retained for compatibility; no frequency augmentation is applied.
-        x_hat = self.selu(self.batch_norm(self.max_pool(self.conv_time(x))))
+        # abs() before max-pooling follows the original AASIST front end.
+        x_hat = self.selu(self.batch_norm(self.max_pool(torch.abs(self.conv_time(x)))))
         t_base = self.temporal_proj(x_hat)  # [B,70,D]
         # Bound the quadratic spatial graph before any pairwise attention.
         spatial_features = F.adaptive_avg_pool1d(x_hat, self.MAX_SPATIAL_NODES)
@@ -210,6 +215,10 @@ class Model(nn.Module):
             Hs = Hs + hs1 + _align_nodes(hs2p, hs1.size(1)) + _align_nodes(hs3, hs1.size(1))
             Sf = Sf + master1 + master2 + master3
 
+        # Average (not sum) over the 4 branches x 3 residual terms so the scale
+        # of the readout does not grow with the number of branches.
+        n_terms = 4 * 3
+        Ht, Hs, Sf = Ht / n_terms, Hs / n_terms, Sf / n_terms
         Ht, Hs, Sf = self.drop_branch(Ht), self.drop_branch(Hs), self.drop_branch(Sf)
         pooled = [
             torch.max(torch.abs(Ht), dim=1).values,
@@ -218,5 +227,5 @@ class Model(nn.Module):
             Hs.mean(dim=1),
             torch.max(torch.abs(Sf), dim=1).values,
         ]
-        L = torch.cat([self.drop_readout(v) for v in pooled], dim=1)
+        L = self.readout_norm(self.drop_readout(torch.cat(pooled, dim=1)))
         return L, self.out_layer(L)

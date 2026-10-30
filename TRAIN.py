@@ -29,6 +29,10 @@ NUM_WORKERS = int(os.environ.get("NUM_WORKERS", "2"))
 MAX_TRAIN_SAMPLES = int(os.environ.get("MAX_TRAIN_SAMPLES", "0"))
 MAX_DEV_SAMPLES = int(os.environ.get("MAX_DEV_SAMPLES", "0"))
 LOG_EVERY = int(os.environ.get("LOG_EVERY", "200"))
+# Linear LR warm-up (in optimizer steps) before cosine decay; helps KAN stability early on.
+WARMUP_STEPS = int(os.environ.get("WARMUP_STEPS", "500"))
+# RESUME=auto continues from CHECKPOINT_DIR/last.pt if it exists; RESUME=<path> loads that file.
+RESUME = os.environ.get("RESUME", "")
 CHECKPOINT_DIR = os.environ.get("CHECKPOINT_DIR", "./checkpoints")
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 print(f"Device={DEVICE} | AMP={USE_AMP} | batch={BATCH_SIZE} | epochs={NUM_EPOCHS}")
@@ -84,7 +88,7 @@ for name, ids, meta in (("train", train_ids, train_meta), ("dev", dev_ids, dev_m
         raise RuntimeError(f"The {name} subset has only one class; EER is undefined. Use a larger subset.")
 train_ds = Dataset_ASVspoof2019_train(train_ids, train_meta, train_audio, is_train=True)
 dev_ds = Dataset_ASVspoof2019_train(dev_ids, dev_meta, dev_audio, is_train=False)
-loader_args = dict(num_workers=NUM_WORKERS, pin_memory=USE_AMP, persistent_workers=NUM_WORKERS > 0)
+loader_args = dict(num_workers=NUM_WORKERS, pin_memory=DEVICE.type == "cuda", persistent_workers=NUM_WORKERS > 0)
 train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, drop_last=False, **loader_args)
 dev_loader = DataLoader(dev_ds, batch_size=BATCH_SIZE, shuffle=False, **loader_args)
 print(f"Dataset root: {root}\nTrain examples: {len(train_ds)} | Dev examples: {len(dev_ds)}")
@@ -99,7 +103,14 @@ d_args = {
 model = Model(d_args).to(DEVICE)
 criterion = nn.CrossEntropyLoss(weight=torch.tensor([0.1, 0.9], dtype=torch.float32, device=DEVICE))
 optimizer = torch.optim.AdamW(model.parameters(), lr=BASE_LR, weight_decay=1e-4)
-scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, NUM_EPOCHS * len(train_loader)), eta_min=5e-6)
+total_steps = max(1, NUM_EPOCHS * len(train_loader))
+warmup_steps = min(WARMUP_STEPS, total_steps - 1) if WARMUP_STEPS > 0 else 0
+cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, total_steps - warmup_steps), eta_min=5e-6)
+if warmup_steps > 0:
+    warmup = torch.optim.lr_scheduler.LinearLR(optimizer, start_factor=0.01, end_factor=1.0, total_iters=warmup_steps)
+    scheduler = torch.optim.lr_scheduler.SequentialLR(optimizer, [warmup, cosine], milestones=[warmup_steps])
+else:
+    scheduler = cosine
 scaler = torch.amp.GradScaler("cuda", enabled=USE_AMP)
 
 def autocast_context():
@@ -144,7 +155,28 @@ def save_checkpoint(path, epoch, best_eer, dev_loss, dev_acc):
     }, path)
 
 best_eer = float("inf")
-for epoch in range(1, NUM_EPOCHS + 1):
+start_epoch = 1
+if RESUME:
+    resume_path = os.path.join(CHECKPOINT_DIR, "last.pt") if RESUME == "auto" else RESUME
+    if os.path.isfile(resume_path):
+        ckpt = torch.load(resume_path, map_location=DEVICE, weights_only=False)
+        if ckpt.get("d_args") != d_args:
+            raise RuntimeError(f"Checkpoint {resume_path} was trained with different model settings (d_args).")
+        model.load_state_dict(ckpt["model_state_dict"])
+        optimizer.load_state_dict(ckpt["optimizer_state_dict"])
+        scheduler.load_state_dict(ckpt["scheduler_state_dict"])
+        scaler.load_state_dict(ckpt["scaler_state_dict"])
+        best_eer = ckpt["best_dev_eer"]
+        start_epoch = ckpt["epoch"] + 1
+        print(f"Resumed from {resume_path}: finished epoch {ckpt['epoch']}, best dev EER so far {best_eer:.4f}")
+    elif RESUME != "auto":
+        raise FileNotFoundError(f"RESUME checkpoint not found: {resume_path}")
+    else:
+        print("RESUME=auto but no last.pt found; starting from scratch.")
+if start_epoch > NUM_EPOCHS:
+    print(f"Nothing to do: checkpoint already finished epoch {start_epoch - 1} of {NUM_EPOCHS}.")
+
+for epoch in range(start_epoch, NUM_EPOCHS + 1):
     model.train()
     epoch_loss = 0.0
     started = time.time()
@@ -170,10 +202,13 @@ for epoch in range(1, NUM_EPOCHS + 1):
     dev_loss, dev_acc, dev_eer = evaluate()
     elapsed = int(time.time() - started)
     avg_train_loss = epoch_loss / len(train_ds)
-    save_checkpoint(os.path.join(CHECKPOINT_DIR, "last.pt"), epoch, best_eer, dev_loss, dev_acc)
     print(f"Epoch {epoch:02d}/{NUM_EPOCHS} | train_loss={avg_train_loss:.5f} | dev_loss={dev_loss:.5f} | dev_acc={dev_acc:.4f} | dev_EER={dev_eer:.4f} | {elapsed}s")
-    if dev_eer < best_eer:
+    improved = dev_eer < best_eer
+    if improved:
         best_eer = dev_eer
+    # last.pt always stores the up-to-date best EER so a resumed run keeps the right bookkeeping.
+    save_checkpoint(os.path.join(CHECKPOINT_DIR, "last.pt"), epoch, best_eer, dev_loss, dev_acc)
+    if improved:
         save_checkpoint(os.path.join(CHECKPOINT_DIR, "best.pt"), epoch, best_eer, dev_loss, dev_acc)
         print(f"  Saved new best checkpoint (dev EER={best_eer:.4f})")
 

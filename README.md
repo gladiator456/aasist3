@@ -65,7 +65,7 @@ Parametric SincConv front end
 70 learnable band-pass filters, mel-initialised
         |
         v
-MaxPool1d -> BatchNorm1d -> SELU
+abs -> MaxPool1d -> BatchNorm1d -> SELU
         |
         +-----------------------------+
         |                             |
@@ -90,13 +90,16 @@ KAN graph pooling                KAN graph pooling
        KAN-HS-GAL -> KAN-GraphPool -> KAN-HS-GAL
                       |
                       v
-          Residual aggregation across branches
+   Residual aggregation (averaged) across branches
                       |
                       v
              Dropout and statistics pooling
                       |
                       v
-                KAN classifier
+                  LayerNorm
+                      |
+                      v
+         KAN classifier (grid range [-3, 3])
                       |
                       v
               Two output logits
@@ -226,6 +229,14 @@ python TRAIN.py
 
 By default, the training script is configured for **25 epochs** and a **batch size of 8**. These settings may need to be reduced depending on the available GPU memory and observed runtime. Checkpoints are written to `./checkpoints` by default; `CHECKPOINT_DIR` can be used to change the output location.
 
+### Resuming an interrupted run
+
+`last.pt` is written after every epoch (model, optimizer, scheduler, scaler, best dev EER). If a session is cut off, rerun with the same settings plus `RESUME=auto`:
+
+```bash
+RESUME=auto python TRAIN.py
+```
+
 ### Short trial run
 
 For a small initial check on Linux or Kaggle:
@@ -261,6 +272,11 @@ The training script supports environment-based configuration. Relevant options i
 | `LOG_EVERY` | Training progress logging interval. |
 | `CHECKPOINT_DIR` | Directory used to save checkpoints. |
 | `USE_AMP` | Opt-in setting for automatic mixed precision where supported. |
+| `BASE_LR` | Peak learning rate (default `1e-4`). |
+| `WARMUP_STEPS` | Linear LR warm-up length in optimizer steps before cosine decay (default `500`). |
+| `RESUME` | `auto` continues from `CHECKPOINT_DIR/last.pt` if present; or give a checkpoint path. |
+| `NUM_WORKERS` | DataLoader worker processes (default `2`). |
+| `SEED` | Random seed (default `42`). |
 
 Consult [`TRAIN.py`](TRAIN.py) for current defaults and implementation details. Start with a stable baseline before enabling optional mixed precision or changing multiple training settings at once.
 
