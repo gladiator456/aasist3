@@ -231,11 +231,13 @@ By default, the training script is configured for **25 epochs** and a **batch si
 
 ### Resuming an interrupted run
 
-`last.pt` is written after every epoch (model, optimizer, scheduler, scaler, best dev EER). If a session is cut off, rerun with the same settings plus `RESUME=auto`:
+`last.pt` is written after every epoch (model, optimizer, scheduler, scaler, best dev EER). If a session is cut off, rerun with the same settings plus `RESUME_FROM=auto` (or a path to a checkpoint):
 
 ```bash
-RESUME=auto python TRAIN.py
+RESUME_FROM=auto python TRAIN.py
 ```
+
+See [`FULL_TRAINING_GUIDE.md`](FULL_TRAINING_GUIDE.md) for the Kaggle workflow.
 
 ### Short trial run
 
@@ -274,7 +276,8 @@ The training script supports environment-based configuration. Relevant options i
 | `USE_AMP` | Opt-in setting for automatic mixed precision where supported. |
 | `BASE_LR` | Peak learning rate (default `1e-4`). |
 | `WARMUP_STEPS` | Linear LR warm-up length in optimizer steps before cosine decay (default `500`). |
-| `RESUME` | `auto` continues from `CHECKPOINT_DIR/last.pt` if present; or give a checkpoint path. |
+| `RESUME_FROM` | Restore full training state. `auto` uses `CHECKPOINT_DIR/last.pt` if present; or give a checkpoint path. |
+| `INIT_FROM` | Load model weights only (fresh optimizer and schedule). Not combinable with `RESUME_FROM`. |
 | `NUM_WORKERS` | DataLoader worker processes (default `2`). |
 | `SEED` | Random seed (default `42`). |
 
