@@ -1,5 +1,6 @@
 """Train the KAN-based ASVspoof model on ASVspoof2019 LA."""
 import os
+import copy
 import glob
 import time
 import random
@@ -10,7 +11,7 @@ from torch.utils.data import DataLoader
 from sklearn.metrics import roc_curve, roc_auc_score, confusion_matrix, classification_report
 
 from DATAUTLIS import genSpoof_list, Dataset_ASVspoof2019_train
-from MODELDEFINITION import Model
+from MODELDEFINITION import Model, DEFAULT_D_ARGS
 
 SEED = int(os.environ.get("SEED", "42"))
 random.seed(SEED)
@@ -94,16 +95,17 @@ train_loader = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, drop_la
 dev_loader = DataLoader(dev_ds, batch_size=BATCH_SIZE, shuffle=False, **loader_args)
 print(f"Dataset root: {root}\nTrain examples: {len(train_ds)} | Dev examples: {len(dev_ds)}")
 
-d_args = {
-    "first_conv": 128,
-    "filts": [70, [1, 32], [32, 32], [32, 24], [24, 24]],
-    "gat_dims": [24, 32],
-    "pool_ratios": [0.4, 0.5, 0.7, 0.5],
-    "temperatures": [2.0, 2.0, 1.0, 1.0],
-}
+d_args = copy.deepcopy(DEFAULT_D_ARGS)
 model = Model(d_args).to(DEVICE)
+print(f"Model parameters: {sum(p.numel() for p in model.parameters()):,}")
 criterion = nn.CrossEntropyLoss(weight=torch.tensor([0.1, 0.9], dtype=torch.float32, device=DEVICE))
-optimizer = torch.optim.AdamW(model.parameters(), lr=BASE_LR, weight_decay=1e-4)
+# The AASIST3 paper found Adam better than AdamW for this model; AdamW stays available via OPTIMIZER=adamw.
+OPTIMIZER = os.environ.get("OPTIMIZER", "adam").lower()
+optimizer_cls = {"adam": torch.optim.Adam, "adamw": torch.optim.AdamW}.get(OPTIMIZER)
+if optimizer_cls is None:
+    raise ValueError(f"OPTIMIZER must be 'adam' or 'adamw', got {OPTIMIZER!r}")
+optimizer = optimizer_cls(model.parameters(), lr=BASE_LR, weight_decay=1e-4)
+print(f"Optimizer={OPTIMIZER} | base_lr={BASE_LR}")
 total_steps = max(1, NUM_EPOCHS * len(train_loader))
 warmup_steps = min(WARMUP_STEPS, total_steps - 1) if WARMUP_STEPS > 0 else 0
 cosine = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, total_steps - warmup_steps), eta_min=5e-6)
@@ -170,7 +172,10 @@ def load_checkpoint(path):
     """Load a checkpoint and fail clearly if it came from a different model architecture."""
     ckpt = torch.load(path, map_location=DEVICE, weights_only=False)
     if ckpt.get("d_args") != d_args:
-        raise RuntimeError(f"Checkpoint {path} was trained with different model settings (d_args).")
+        raise RuntimeError(
+            f"Checkpoint {path} was trained with different model settings (d_args). "
+            "Checkpoints from the earlier encoder-less model cannot be reused with the current architecture."
+        )
     try:
         model.load_state_dict(ckpt["model_state_dict"])
     except RuntimeError as exc:

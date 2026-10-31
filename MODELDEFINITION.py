@@ -1,8 +1,11 @@
-"""Memory-bounded KAN-based audio anti-spoofing model.
+"""KAN-based audio anti-spoofing model following the AASIST3 paper's closed-condition design.
 
-This is a runnable experimental architecture, not a reproduction guarantee for
-any published AASIST variant. Dense graph attention is kept bounded by limiting
-the spatial graph to MAX_SPATIAL_NODES.
+Pre-emphasis -> fixed SincConv -> abs/max-pool -> BN -> SELU -> 6-block residual
+encoder -> spatial (frequency) and temporal (time) graphs with positional
+embeddings -> KAN-GAL / KAN-GraphPool -> 4 KAN-HS-GAL branches -> KAN classifier.
+The graphs are small (about 23 spatial and 29 temporal nodes), so dense pairwise
+attention stays cheap. This is a research prototype, not a guaranteed
+reproduction of the published results.
 """
 import numpy as np
 import torch
@@ -103,8 +106,29 @@ class KAN_GraphPool(nn.Module):
         return torch.gather(h * scores, 1, idx)
 
 
+TARGET_SAMPLES = 64600  # 16 kHz, ~4.04 s: the fixed input length the model is built for
+
+# Single source of truth for the model configuration; TRAIN.py, SMOKE_TEST.py,
+# EVAL.py and MODELS.py all import this so the settings cannot drift apart.
+# "arch" and "pre_emphasis" also make checkpoints from the older encoder-less
+# model fail the d_args comparison with a clear error instead of loading wrongly.
+DEFAULT_D_ARGS = {
+    "arch": "aasist3-encoder-v2",
+    "first_conv": 128,
+    "filts": [70, [1, 32], [32, 32], [32, 24], [24, 24]],
+    "gat_dims": [24, 32],
+    "pool_ratios": [0.4, 0.5, 0.7, 0.5],
+    "temperatures": [2.0, 2.0, 1.0, 1.0],
+    "pre_emphasis": 0.97,
+}
+
+
 class AASIST3SincConv(nn.Module):
-    """Trainable parametric band-pass filters initialized on a mel scale."""
+    """Fixed (non-trainable) mel-initialised band-pass filter bank.
+
+    The AASIST3 paper uses a non-trainable SincConv front end. The filters are
+    built once here instead of being recomputed on every forward pass.
+    """
     @staticmethod
     def to_mel(hz):
         return 2595.0 * np.log10(1.0 + hz / 700.0)
@@ -118,32 +142,51 @@ class AASIST3SincConv(nn.Module):
         self.out_channels = int(out_channels)
         self.kernel_size = int(kernel_size) + (int(kernel_size) % 2 == 0)
         self.sample_rate = int(sample_rate)
-        hz = np.linspace(0, sample_rate / 2, 257)
-        mel_edges = np.linspace(self.to_mel(hz).min(), self.to_mel(hz).max(), out_channels + 1)
+        nyquist = self.sample_rate / 2
+        hz = np.linspace(0, nyquist, 257)
+        mel_edges = np.linspace(self.to_mel(hz).min(), self.to_mel(hz).max(), self.out_channels + 1)
         edges = self.to_hz(mel_edges)
-        self.mel_low = nn.Parameter(torch.tensor(edges[:-1], dtype=torch.float32))
-        self.mel_band = nn.Parameter(torch.tensor(np.diff(edges), dtype=torch.float32))
-        self.register_buffer("hsupp", torch.arange(-(self.kernel_size // 2), self.kernel_size // 2 + 1).float())
-        self.register_buffer("window", torch.from_numpy(np.hamming(self.kernel_size).astype(np.float32)))
+        low = torch.tensor(edges[:-1], dtype=torch.float32).clamp(0, nyquist - 1)
+        band = torch.tensor(np.diff(edges), dtype=torch.float32).clamp(1, nyquist)
+        high = torch.minimum(low + band, torch.full_like(low, nyquist))
+        t = torch.arange(-(self.kernel_size // 2), self.kernel_size // 2 + 1).float()
+        window = torch.from_numpy(np.hamming(self.kernel_size).astype(np.float32))
+        hi_kernel = (2 * high[:, None] / self.sample_rate) * torch.sinc(2 * high[:, None] * t[None, :] / self.sample_rate)
+        lo_kernel = (2 * low[:, None] / self.sample_rate) * torch.sinc(2 * low[:, None] * t[None, :] / self.sample_rate)
+        self.register_buffer("kernels", ((hi_kernel - lo_kernel) * window).unsqueeze(1))  # [C,1,K]
 
     def forward(self, x):
         if x.dim() == 2:
             x = x.unsqueeze(1)
         if x.dim() != 3 or x.size(1) != 1:
             raise ValueError(f"SincConv expects [B,T] or [B,1,T], got {tuple(x.shape)}")
-        nyquist = self.sample_rate / 2
-        low = self.mel_low.clamp(0, nyquist - 1)
-        band = self.mel_band.clamp(1, nyquist)
-        high = torch.minimum(low + band, torch.full_like(low, nyquist))
-        t = self.hsupp.to(device=x.device, dtype=x.dtype)
-        window = self.window.to(device=x.device, dtype=x.dtype)
-        filters = []
-        for lo, hi in zip(low, high):
-            hi_kernel = (2 * hi / self.sample_rate) * torch.sinc(2 * hi * t / self.sample_rate)
-            lo_kernel = (2 * lo / self.sample_rate) * torch.sinc(2 * lo * t / self.sample_rate)
-            filters.append((hi_kernel - lo_kernel) * window)
-        kernels = torch.stack(filters).unsqueeze(1).to(dtype=x.dtype)
-        return F.conv1d(x, kernels)
+        return F.conv1d(x, self.kernels.to(dtype=x.dtype))
+
+
+class ResidualBlock(nn.Module):
+    """Encoder unit from the paper: ConvUnit(x) = Conv(SELU(BatchNorm(x))), applied
+    twice, with a (down-sampled if needed) skip connection and max-pooling over time."""
+
+    def __init__(self, nb_filts, first=False):
+        super().__init__()
+        in_ch, out_ch = int(nb_filts[0]), int(nb_filts[1])
+        self.first = first
+        self.bn1 = None if first else nn.BatchNorm2d(in_ch)
+        self.conv1 = nn.Conv2d(in_ch, out_ch, kernel_size=(2, 3), padding=(1, 1))
+        self.bn2 = nn.BatchNorm2d(out_ch)
+        self.conv2 = nn.Conv2d(out_ch, out_ch, kernel_size=(2, 3), padding=(0, 1))
+        self.selu = nn.SELU(inplace=True)
+        self.conv_downsample = nn.Conv2d(in_ch, out_ch, kernel_size=(1, 3), padding=(0, 1)) if in_ch != out_ch else None
+        self.mp = nn.MaxPool2d((1, 3))
+
+    def forward(self, x):
+        identity = x
+        out = x if self.first else self.selu(self.bn1(x))
+        out = self.selu(self.bn2(self.conv1(out)))
+        out = self.conv2(out)
+        if self.conv_downsample is not None:
+            identity = self.conv_downsample(identity)
+        return self.mp(out + identity)
 
 
 def _align_nodes(x, n_nodes):
@@ -154,23 +197,38 @@ def _align_nodes(x, n_nodes):
 
 
 class Model(nn.Module):
-    MAX_SPATIAL_NODES = 64
-
     def __init__(self, d_args):
         super().__init__()
+        filts = d_args["filts"]
         feature_dim = int(d_args["gat_dims"][0])
-        out_channels = int(d_args["filts"][0])
-        self.conv_time = AASIST3SincConv(out_channels, d_args["first_conv"])
-        self.max_pool = nn.MaxPool1d(kernel_size=3, stride=3, padding=1)
-        self.batch_norm = nn.BatchNorm1d(out_channels)
+        if int(filts[4][1]) != feature_dim:
+            raise ValueError(f"Encoder output channels ({filts[4][1]}) must equal gat_dims[0] ({feature_dim}).")
+        self.pre_emphasis = float(d_args.get("pre_emphasis", 0.97))
+
+        # Front end: pre-emphasis -> SincConv -> abs -> 2-D max-pool -> BN -> SELU -> encoder.
+        self.conv_time = AASIST3SincConv(int(filts[0]), d_args["first_conv"])
+        self.first_bn = nn.BatchNorm2d(1)
         self.selu = nn.SELU(inplace=True)
-        # Preserve the intended two axes: 70 channel-nodes for the temporal
-        # graph, and a bounded set of time-nodes for the spatial graph.
+        self.encoder = nn.Sequential(
+            ResidualBlock(filts[1], first=True),
+            ResidualBlock(filts[2]),
+            ResidualBlock(filts[3]),
+            ResidualBlock(filts[4]),
+            ResidualBlock(filts[4]),
+            ResidualBlock(filts[4]),
+        )
+
+        # Learned positional embeddings for the spatial (frequency) and temporal
+        # (time) node sets. Node counts follow from the fixed input length; the
+        # dummy pass runs in eval mode so BatchNorm statistics are not touched.
+        was_training = self.training
+        self.eval()
         with torch.no_grad():
-            dummy = torch.zeros(1, 64600)
-            reduced_time = self.max_pool(self.conv_time(dummy)).shape[-1]
-        self.temporal_proj = nn.Linear(reduced_time, feature_dim)
-        self.spatial_proj = nn.Linear(out_channels, feature_dim)
+            encoded = self._encode(torch.zeros(1, TARGET_SAMPLES))
+        self.train(was_training)
+        n_freq, n_time = int(encoded.size(2)), int(encoded.size(3))
+        self.pos_S = nn.Parameter(torch.randn(1, n_freq, feature_dim))
+        self.pos_T = nn.Parameter(torch.randn(1, n_time, feature_dim))
         self.S1 = nn.Parameter(torch.randn(1, 1, feature_dim) * 0.02)
 
         temps = d_args.get("temperatures", [1.0, 1.0])
@@ -191,16 +249,24 @@ class Model(nn.Module):
         self.readout_norm = nn.LayerNorm(5 * feature_dim)
         self.out_layer = KAN([5 * feature_dim, 2], grid_range=[-3, 3])
 
+    def _encode(self, x):
+        """Raw waveform [B, T] -> encoder feature map [B, C, freq_nodes, time_nodes]."""
+        if self.pre_emphasis > 0:
+            x = torch.cat([x[:, :1], x[:, 1:] - self.pre_emphasis * x[:, :-1]], dim=1)
+        x = self.conv_time(x).unsqueeze(1)           # [B, 1, 70, T']
+        x = F.max_pool2d(torch.abs(x), (3, 3))        # [B, 1, 23, T'/3]
+        x = self.selu(self.first_bn(x))
+        return self.encoder(x)                        # [B, 24, 23, ~29]
+
     def forward(self, x, Freq_aug=False):
         # Freq_aug retained for compatibility; no frequency augmentation is applied.
-        # abs() before max-pooling follows the original AASIST front end.
-        x_hat = self.selu(self.batch_norm(self.max_pool(torch.abs(self.conv_time(x)))))
-        t_base = self.temporal_proj(x_hat)  # [B,70,D]
-        # Bound the quadratic spatial graph before any pairwise attention.
-        spatial_features = F.adaptive_avg_pool1d(x_hat, self.MAX_SPATIAL_NODES)
-        s_base = self.spatial_proj(spatial_features.transpose(1, 2))  # [B,64,D]
-        ht1 = self.pool_T(self.GAT_layer_T(t_base))
-        hs1 = self.pool_S(self.GAT_layer_S(s_base))
+        if x.dim() != 2 or x.size(1) != TARGET_SAMPLES:
+            raise ValueError(f"Model expects waveforms of shape [B, {TARGET_SAMPLES}], got {tuple(x.shape)}")
+        e = torch.abs(self._encode(x))
+        spatial = e.max(dim=3).values.transpose(1, 2) + self.pos_S   # [B, F, D]  (max over time)
+        temporal = e.max(dim=2).values.transpose(1, 2) + self.pos_T  # [B, T'', D] (max over frequency)
+        ht1 = self.pool_T(self.GAT_layer_T(temporal))
+        hs1 = self.pool_S(self.GAT_layer_S(spatial))
         master1 = self.S1.expand(x.size(0), -1, -1)
 
         Ht = torch.zeros_like(ht1)

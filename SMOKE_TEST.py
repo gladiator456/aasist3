@@ -1,16 +1,10 @@
 """Quick forward/backward sanity check; does not require the ASVspoof dataset."""
 import torch
-from MODELDEFINITION import Model
+from MODELDEFINITION import Model, DEFAULT_D_ARGS
 
 def main():
     torch.manual_seed(7)
-    args = {
-        "first_conv": 128,
-        "filts": [70, [1, 32], [32, 32], [32, 24], [24, 24]],
-        "gat_dims": [24, 32],
-        "pool_ratios": [0.4, 0.5, 0.7, 0.5],
-        "temperatures": [2.0, 2.0, 1.0, 1.0],
-    }
+    args = dict(DEFAULT_D_ARGS)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     model = Model(args).to(device).train()
     waves = torch.randn(1, 64600, device=device)

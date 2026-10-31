@@ -61,17 +61,23 @@ Raw waveform
 (16 kHz, 64,600 samples; approximately 4.04 seconds)
         |
         v
-Parametric SincConv front end
-70 learnable band-pass filters, mel-initialised
+Pre-emphasis (x[n] - 0.97 * x[n-1])
         |
         v
-abs -> MaxPool1d -> BatchNorm1d -> SELU
+Fixed SincConv front end
+70 non-trainable band-pass filters, mel-initialised
+        |
+        v
+abs -> 2-D MaxPool (3x3) -> BatchNorm2d -> SELU
+        |
+        v
+Residual encoder: 6 conv blocks (24 channels out)
         |
         +-----------------------------+
         |                             |
         v                             v
-Temporal projection              Spatial projection
-24-dimensional nodes             24-dimensional nodes
+max over frequency + pos. emb.   max over time + pos. emb.
+Temporal graph (~29 nodes, 24-d)  Spatial graph (23 nodes, 24-d)
         |                             |
         v                             v
 KAN graph attention              KAN graph attention
@@ -108,13 +114,16 @@ KAN graph pooling                KAN graph pooling
 
 ### Main components
 
-- **SincConv front end:** learns band-pass filters from the raw waveform.
+- **Pre-emphasis and SincConv front end:** a high-frequency boost followed by a fixed mel-initialised band-pass filter bank, as in the AASIST3 paper.
+- **Residual encoder:** six convolutional blocks that turn the 2-D filter-bank output into a 24-channel feature map; its frequency axis becomes the spatial graph and its time axis the temporal graph.
 - **KAN-GAL:** graph-attention processing using KAN-based projections.
 - **KAN-HS-GAL:** heterogeneous graph-attention processing across temporal and spatial nodes with a shared master node.
 - **KAN-GraphPool:** selects nodes using learned scoring functions.
 - **Classifier:** produces two logits corresponding to spoof and bonafide classes.
 
-The active implementation is in [`MODELDEFINITION.py`](MODELDEFINITION.py). The input projections named `temporal_proj` and `spatial_proj` use standard `nn.Linear` layers; KAN components are used in other parts of the graph-processing and classification pipeline. The spatial graph is capped at 64 nodes to constrain pairwise-attention memory use.
+The active implementation is in [`MODELDEFINITION.py`](MODELDEFINITION.py), and its configuration lives in `DEFAULT_D_ARGS` so training, evaluation and tests share one set of settings. Both graphs are small (about 23 spatial and 29 temporal nodes), so dense pairwise attention is cheap.
+
+Known differences from the paper: the HS-GAL layers keep a 24-dimensional node width (`gat_dims[1]` is not used), the KAN layers use the `efficient-kan` defaults, and the readout averages the branch outputs and adds a LayerNorm before the classifier for numerical stability.
 
 These architectural details describe the implementation, not verified evidence of model effectiveness.
 
@@ -157,6 +166,7 @@ The script is intended to download and unpack the LA dataset under `./LA`. If yo
 | [`MODELDEFINITION.py`](MODELDEFINITION.py) | Active model definition, including the SincConv front end, graph components and classifier. |
 | [`DATAUTLIS.py`](DATAUTLIS.py) | Protocol parsing, audio preprocessing and dataset utilities. |
 | [`DATASET_Download.py`](DATASET_Download.py) | Dataset download and extraction helper. |
+| [`EVAL.py`](EVAL.py) | Scores the LA eval (or dev) split with a checkpoint and reports EER and ROC-AUC. |
 | [`SMOKE_TEST.py`](SMOKE_TEST.py) | Basic forward/backward and output-validity checks using synthetic inputs. |
 | [`requirements.txt`](requirements.txt) | Python package dependencies. |
 | [`.github/workflows/model-smoke-test.yml`](.github/workflows/model-smoke-test.yml) | GitHub Actions workflow for automated smoke testing. |
@@ -275,6 +285,7 @@ The training script supports environment-based configuration. Relevant options i
 | `CHECKPOINT_DIR` | Directory used to save checkpoints. |
 | `USE_AMP` | Opt-in setting for automatic mixed precision where supported. |
 | `BASE_LR` | Peak learning rate (default `1e-4`). |
+| `OPTIMIZER` | `adam` (default, as in the paper) or `adamw`. |
 | `WARMUP_STEPS` | Linear LR warm-up length in optimizer steps before cosine decay (default `500`). |
 | `RESUME_FROM` | Restore full training state. `auto` uses `CHECKPOINT_DIR/last.pt` if present; or give a checkpoint path. |
 | `INIT_FROM` | Load model weights only (fresh optimizer and schedule). Not combinable with `RESUME_FROM`. |
@@ -287,7 +298,21 @@ Consult [`TRAIN.py`](TRAIN.py) for current defaults and implementation details. 
 
 The training code includes development-set evaluation. Once real-data training is complete, this section should document the evaluation protocol, checkpoint-selection procedure, dataset split and relevant anti-spoofing metrics.
 
-**Results are intentionally omitted for now.** No EER, accuracy, min t-DCF or other model-performance values are claimed until training and evaluation have been completed. Results should be added with the corresponding experimental setup so they can be interpreted and reproduced.
+`TRAIN.py` selects `best.pt` by dev EER, so the dev EER it prints is slightly optimistic. Report the number from the held-out eval split instead:
+
+```bash
+DATASET_ROOT=/path/to/LA CHECKPOINT=checkpoints_full/best.pt python EVAL.py
+```
+
+`EVAL.py` reports EER and ROC-AUC on the first ~4 s of each clip; min t-DCF is not computed because it needs the official ASV score files.
+
+### Training history
+
+| Run | Model | Setup | Best dev EER | Notes |
+|---|---|---|---|---|
+| 1 | Earlier encoder-less model (commit `21d1c66`) | 12 epochs, batch 8, AdamW, lr 1e-4, Kaggle T4 | 14.57% (epoch 10); dev ROC-AUC peaked at 0.928 | Learned but plateaued from epoch 7. No eval-split result. |
+
+Run 1 omitted the paper's residual encoder, pre-emphasis and positional embeddings, which is the likely reason for the plateau. The current model adds them. No result for the current model is reported yet.
 
 ## Current Status and Roadmap
 

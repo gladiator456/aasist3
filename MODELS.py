@@ -5,16 +5,10 @@ This module keeps the older class name available for scripts that expect logits
 only, without maintaining a second, incompatible architecture.
 """
 import torch.nn as nn
-from MODELDEFINITION import Model
+from MODELDEFINITION import Model, DEFAULT_D_ARGS
 
 
-_DEFAULT_ARGS = {
-    "first_conv": 128,
-    "filts": [70, [1, 32], [32, 32], [32, 24], [24, 24]],
-    "gat_dims": [24, 32],
-    "pool_ratios": [0.4, 0.5, 0.7, 0.5],
-    "temperatures": [2.0, 2.0, 1.0, 1.0],
-}
+_DEFAULT_ARGS = dict(DEFAULT_D_ARGS)
 
 
 class AASIST3_Complete_Model(nn.Module):
