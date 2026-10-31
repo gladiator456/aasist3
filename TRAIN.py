@@ -36,6 +36,9 @@ CHECKPOINT_DIR = os.environ.get("CHECKPOINT_DIR", "./checkpoints")
 # INIT_FROM loads model weights only; RESUME_FROM restores full training state.
 INIT_FROM = os.environ.get("INIT_FROM", "").strip()
 RESUME_FROM = os.environ.get("RESUME_FROM", "").strip()
+# STOP_AFTER_EPOCH=k pauses cleanly after epoch k (checkpoint saved) while the LR schedule still spans
+# NUM_EPOCHS, so a long run can be split across sessions: resume later with RESUME_FROM=auto and the same NUM_EPOCHS.
+STOP_AFTER_EPOCH = int(os.environ.get("STOP_AFTER_EPOCH", "0"))
 os.makedirs(CHECKPOINT_DIR, exist_ok=True)
 print(f"Device={DEVICE} | AMP={USE_AMP} | batch={BATCH_SIZE} | epochs={NUM_EPOCHS}")
 if DEVICE.type == "cuda" and not USE_AMP:
@@ -218,6 +221,7 @@ if RESUME_FROM:
     print(f"Resuming from epoch {start_epoch} using {RESUME_FROM}. "
           "Keep NUM_EPOCHS and dataset/subset settings consistent with the original run.")
 
+stopped_early = False
 for epoch in range(start_epoch, NUM_EPOCHS + 1):
     model.train()
     epoch_loss = 0.0
@@ -265,4 +269,12 @@ for epoch in range(start_epoch, NUM_EPOCHS + 1):
         save_checkpoint(os.path.join(CHECKPOINT_DIR, "best.pt"), epoch, best_eer, dev_loss, dev_acc)
         print(f"  Saved new best checkpoint (dev EER={best_eer:.4f})")
 
-print(f"Training complete. Best dev EER={best_eer:.4f}. Checkpoints: {CHECKPOINT_DIR}")
+    if 0 < STOP_AFTER_EPOCH <= epoch < NUM_EPOCHS:
+        stopped_early = True
+        print(f"Pausing after epoch {epoch} (STOP_AFTER_EPOCH). Resume with RESUME_FROM=auto and the same NUM_EPOCHS={NUM_EPOCHS}.")
+        break
+
+if stopped_early:
+    print(f"Paused. Best dev EER so far={best_eer:.4f}. Checkpoints: {CHECKPOINT_DIR}")
+else:
+    print(f"Training complete. Best dev EER={best_eer:.4f}. Checkpoints: {CHECKPOINT_DIR}")

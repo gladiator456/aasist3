@@ -88,3 +88,18 @@ python -u EVAL.py
 ```
 
 It prints the eval EER and ROC-AUC (first ~4 s of each clip; no min t-DCF). You can add this as a third cell in the background notebook so it runs automatically after training.
+
+## Longer runs across two sessions (for example 25 epochs)
+
+One background session is limited to about 12 hours, and an epoch takes about 33 minutes, so a 25-epoch run needs two sessions. Keep `NUM_EPOCHS=25` in both so the learning-rate schedule is identical.
+
+Session 1: add `STOP_AFTER_EPOCH=13` to the training command. It pauses cleanly after epoch 13 and leaves `last.pt` in `checkpoints_full`. Download or save the version's output.
+
+Session 2: attach session 1's output to the new notebook as an input, then add this cell after the setup cell:
+
+```bash
+!mkdir -p /kaggle/working/checkpoints_full
+!cp "$(find /kaggle/input -name last.pt | head -n 1)" /kaggle/working/checkpoints_full/last.pt
+```
+
+and run training with `RESUME_FROM=auto` and the same `NUM_EPOCHS=25`.

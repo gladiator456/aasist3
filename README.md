@@ -289,6 +289,7 @@ The training script supports environment-based configuration. Relevant options i
 | `WARMUP_STEPS` | Linear LR warm-up length in optimizer steps before cosine decay (default `500`). |
 | `RESUME_FROM` | Restore full training state. `auto` uses `CHECKPOINT_DIR/last.pt` if present; or give a checkpoint path. |
 | `INIT_FROM` | Load model weights only (fresh optimizer and schedule). Not combinable with `RESUME_FROM`. |
+| `STOP_AFTER_EPOCH` | Pause cleanly after this epoch (checkpoint saved) while the LR schedule still spans `NUM_EPOCHS`. Resume with `RESUME_FROM=auto` and the same `NUM_EPOCHS` to split a long run across sessions. |
 | `NUM_WORKERS` | DataLoader worker processes (default `2`). |
 | `SEED` | Random seed (default `42`). |
 
@@ -311,8 +312,9 @@ DATASET_ROOT=/path/to/LA CHECKPOINT=checkpoints_full/best.pt python EVAL.py
 | Run | Model | Setup | Best dev EER | Notes |
 |---|---|---|---|---|
 | 1 | Earlier encoder-less model (commit `21d1c66`) | 12 epochs, batch 8, AdamW, lr 1e-4, Kaggle T4 | 14.57% (epoch 10); dev ROC-AUC peaked at 0.928 | Learned but plateaued from epoch 7. No eval-split result. |
+| 2 | Current model (commit `007ad23`) | 15 epochs, batch 16, Adam, lr 1e-4, Kaggle T4 | 1.28% (epoch 15, the last epoch) | Eval split (71,237 clips, first ~4 s of each): EER 1.83%, ROC-AUC 0.9966. No min t-DCF. The best checkpoint was the final epoch, so training had not clearly plateaued. |
 
-Run 1 omitted the paper's residual encoder, pre-emphasis and positional embeddings, which is the likely reason for the plateau. The current model adds them. No result for the current model is reported yet.
+Run 1 omitted the paper's residual encoder, pre-emphasis and positional embeddings, which is the likely reason for the plateau. Run 2 adds them and lowered the best dev EER from 14.57% to 1.28%. The eval-split score is from a single run and a single seed, and it scores only the first ~4 s of each clip, so it is not directly comparable to published full-utterance numbers.
 
 ## Current Status and Roadmap
 
