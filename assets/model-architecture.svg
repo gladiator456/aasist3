@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="760" viewBox="0 0 1200 760">
+<defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto"><path d="M0,0 L0,6 L9,3 z" fill="#64748b"/></marker><style>
+.bg{fill:#f8fafc}.title{font:700 30px Arial,sans-serif;fill:#0f172a}.sub{font:16px Arial,sans-serif;fill:#475569}.box{fill:#fff;stroke:#64748b;stroke-width:2;rx:14}.blue{fill:#dbeafe;stroke:#2563eb}.purple{fill:#ede9fe;stroke:#7c3aed}.green{fill:#dcfce7;stroke:#16a34a}.orange{fill:#ffedd5;stroke:#ea580c}.txt{font:600 17px Arial,sans-serif;fill:#0f172a;text-anchor:middle}.small{font:14px Arial,sans-serif;fill:#334155;text-anchor:middle}.arrow{stroke:#64748b;stroke-width:2.5;fill:none;marker-end:url(#arrow)}
+</style></defs>
+<rect class="bg" width="1200" height="760" rx="20"/>
+<text x="600" y="48" class="title" text-anchor="middle">AASIST3 — KAN-Based Speech Anti-Spoofing</text>
+<text x="600" y="76" class="sub" text-anchor="middle">Schematic of the model path implemented in MODELDEFINITION.py</text>
+<rect x="420" y="105" width="360" height="58" class="box blue"/><text x="600" y="129" class="txt">Raw audio waveform</text><text x="600" y="150" class="small">16 kHz · 64,600 samples (~4.04 s)</text>
+<path d="M600 163 V190" class="arrow"/>
+<rect x="420" y="192" width="360" height="58" class="box"/><text x="600" y="216" class="txt">Pre-emphasis + SincConv</text><text x="600" y="237" class="small">Fixed mel-initialised band-pass filters</text>
+<path d="M600 250 V277" class="arrow"/>
+<rect x="420" y="279" width="360" height="58" class="box"/><text x="600" y="303" class="txt">Residual convolutional encoder</text><text x="600" y="324" class="small">6 convolution blocks · 24 channels</text>
+<path d="M600 337 V360 H300 V382 M600 360 H900 V382" class="arrow"/>
+<rect x="95" y="384" width="410" height="72" class="box purple"/><text x="300" y="412" class="txt">Temporal graph</text><text x="300" y="436" class="small">~29 nodes · positional embeddings · KAN graph attention</text>
+<rect x="695" y="384" width="410" height="72" class="box purple"/><text x="900" y="412" class="txt">Spatial graph</text><text x="900" y="436" class="small">~23 nodes · positional embeddings · KAN graph attention</text>
+<path d="M300 456 V482 M900 456 V482" class="arrow"/>
+<rect x="125" y="484" width="350" height="58" class="box blue"/><text x="300" y="508" class="txt">KAN graph pooling</text><text x="300" y="529" class="small">Retain top-scoring nodes (~40%)</text>
+<rect x="725" y="484" width="350" height="58" class="box blue"/><text x="900" y="508" class="txt">KAN graph pooling</text><text x="900" y="529" class="small">Retain top-scoring nodes (~50%)</text>
+<path d="M300 542 V565 H600 V583 M900 542 V565 H600" class="arrow"/>
+<rect x="360" y="585" width="480" height="58" class="box orange"/><text x="600" y="609" class="txt">Master node + 4 heterogeneous branches</text><text x="600" y="630" class="small">KAN-HS-GAL → KAN-GraphPool → KAN-HS-GAL</text>
+<path d="M600 643 V665" class="arrow"/>
+<rect x="360" y="667" width="480" height="58" class="box green"/><text x="600" y="691" class="txt">Statistics pooling + LayerNorm + KAN classifier</text><text x="600" y="712" class="small">Two output logits: spoof / bonafide</text>
+</svg>
