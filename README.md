@@ -1,6 +1,12 @@
 # AASIST3: KAN-Based Speech Anti-Spoofing
 
-Show Image Show Image Show Image Show Image Show Image
+![AASIST3 model architecture](assets/model-architecture.svg)
+
+*Model architecture: waveform preprocessing, residual encoder, temporal/spatial graph branches, KAN graph modules, and spoof/bonafide classifier.*
+
+![Development EER across training epochs](assets/dev-eer-training.svg)
+
+*Training plot uses the per-epoch development EER values listed in this README; the fine-tuning run has 10 epochs.*
 
 A PyTorch implementation of **AASIST3**-style speech deepfake detection: a graph-attention anti-spoofing model (after AASIST) in which the attention, pooling and classifier layers use **Kolmogorov-Arnold Network (KAN)** components. It takes a raw waveform and classifies it as **bonafide** or **spoof**, trained and evaluated on **ASVspoof 2019 Logical Access (LA)**.
 
